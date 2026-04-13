@@ -1018,7 +1018,7 @@ export default function NextPlayCoachingApp() {
   // REP VIEW (Submit Transcript)
   // ============================================
   
-  const RepView = () => (
+  const RepView = React.memo(() => (
     <div style={{
       minHeight: '100vh',
       backgroundColor: styles.colors.bg,
