@@ -1,24 +1,29 @@
+'use client';
+
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 let supabaseInstance: SupabaseClient | null = null;
 
-export function getSupabase() {
-  if (!supabaseInstance) {
+export const getSupabase = () => {
+  if (!supabaseInstance && typeof window !== 'undefined') {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     
-    if (!supabaseUrl || !supabaseAnonKey) {
-      throw new Error('Missing Supabase environment variables');
+    if (supabaseUrl && supabaseAnonKey) {
+      supabaseInstance = createClient(supabaseUrl, supabaseAnonKey);
     }
-    
-    supabaseInstance = createClient(supabaseUrl, supabaseAnonKey);
   }
   return supabaseInstance;
-}
+};
 
-// For backwards compatibility
 export const supabase = {
-  from: (table: string) => getSupabase().from(table),
+  from: (table: string) => {
+    const client = getSupabase();
+    if (!client) {
+      throw new Error('Supabase client not initialized');
+    }
+    return client.from(table);
+  },
 };
 
 export interface Submission {

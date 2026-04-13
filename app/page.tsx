@@ -122,6 +122,9 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
     // Check if this is a form section (Section 1)
     let inFormSection = false;
     
+    // Track seen questions to avoid duplicates
+    const seenQuestions = new Set<string>();
+    
     const formColors = {
       question: '#b45309',  // Darker orange for labels
       answer: '#f9fafb',    // White for answers
@@ -345,6 +348,14 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
         if (colonIndex > 0) {
           const question = line.substring(0, colonIndex).replace(/\*\*/g, '').trim();
           const answer = line.substring(colonIndex + 2).replace(/\*\*/g, '').trim();
+          
+          // Skip if we've already seen this question
+          if (seenQuestions.has(question.toLowerCase())) {
+            continue;
+          }
+          seenQuestions.add(question.toLowerCase());
+          
+          // Only render if there's an answer
           if (answer.length > 0) {
             elements.push(
               <div key={`field-${elements.length}`} style={{ marginBottom: '12px' }}>
@@ -365,9 +376,11 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
                 </span>
               </div>
             );
-            continue;
           }
+          continue;
         }
+        // If in form section but no colon, skip
+        continue;
       }
       
       elements.push(

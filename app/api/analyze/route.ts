@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { createServerSupabase } from '@/lib/supabase-server';
 import { DEFAULT_SYSTEM_PROMPT } from '@/lib/system-prompt';
 
 const anthropic = new Anthropic({
@@ -14,6 +14,8 @@ export async function POST(request: NextRequest) {
     if (!transcript || !repName) {
       return Response.json({ error: 'Missing transcript or repName' }, { status: 400 });
     }
+
+    const supabase = createServerSupabase();
 
     // Get custom system prompt if exists
     const { data: promptData } = await supabase
