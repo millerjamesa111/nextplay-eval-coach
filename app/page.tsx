@@ -1091,7 +1091,7 @@ export default function NextPlayCoachingApp() {
                       outline: 'none',
                     }}
                   />
-                  {repCode && (
+                   {repCode.length >= 4 && (
                     <span style={{
                       fontSize: '14px',
                       color: validateRepCode(repCode) ? styles.colors.accent : styles.colors.danger,
