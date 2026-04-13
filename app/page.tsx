@@ -1077,7 +1077,7 @@ export default function NextPlayCoachingApp() {
                   <input
                     type="text"
                     id="rep-code-input"
-                    defaultValue=""
+                    value={repCode}
                     onChange={(e) => setRepCode(e.target.value)}
                     placeholder="e.g., will-223"
                     style={{
@@ -1091,16 +1091,6 @@ export default function NextPlayCoachingApp() {
                       outline: 'none',
                     }}
                   />
-                   {repCode.length >= 4 && (
-                    <span style={{
-                      fontSize: '14px',
-                      color: validateRepCode(repCode) ? styles.colors.accent : styles.colors.danger,
-                    }}>
-                      {validateRepCode(repCode) 
-                        ? `✓ ${validateRepCode(repCode)!.rep_name}`
-                        : '✗ Code not recognized'}
-                    </span>
-                  )}
                 </div>
               </div>
               
