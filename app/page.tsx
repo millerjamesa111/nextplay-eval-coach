@@ -1076,6 +1076,7 @@ export default function NextPlayCoachingApp() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                   <input
                     type="text"
+                    id="rep-code-input"
                     value={repCode}
                     onChange={(e) => setRepCode(e.target.value)}
                     placeholder="e.g., will-223"
