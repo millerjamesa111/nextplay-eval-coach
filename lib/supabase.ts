@@ -26,6 +26,10 @@ export const supabase = {
   },
 };
 
+// =============================================
+// TYPES
+// =============================================
+
 export interface Submission {
   id: string;
   rep_name: string;
@@ -36,4 +40,21 @@ export interface Submission {
   interview_date: string | null;
   created_at: string;
   flagged: boolean;
+  transcript_header: string | null;  // v7: for duplicate detection
+  rep_id: string | null;              // v7: link to reps table
+}
+
+export interface Rep {
+  id: string;
+  rep_name: string;
+  rep_code: string;
+  active: boolean;
+  created_at: string;
+}
+
+export interface Setting {
+  id: string;
+  key: string;
+  value: string;
+  updated_at: string;
 }

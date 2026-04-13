@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { supabase, Submission } from '@/lib/supabase';
+import { supabase, Submission, Rep } from '@/lib/supabase';
 import { DEFAULT_SYSTEM_PROMPT } from '@/lib/system-prompt';
 
 // ============================================
@@ -86,7 +86,7 @@ const Spinner = () => (
   </div>
 );
 
-// Markdown renderer component
+// Markdown renderer component (same as v6)
 const MarkdownRenderer = ({ content }: { content: string }) => {
   const renderMarkdown = (text: string) => {
     const lines = text.split('\n');
@@ -106,9 +106,7 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
       return line;
     };
     
-    // Simple check: does this line look like "Question?: Answer" or "Label: Value"
     const parseFormField = (line: string): { question: string; answer: string } | null => {
-      // Match pattern: "Some question text?: Some answer text" or "Label: Value"
       const match = line.match(/^([^:]+\??)\s*:\s*(.+)$/);
       if (match && match[2].trim().length > 0) {
         return {
@@ -119,16 +117,8 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
       return null;
     };
     
-    // Check if this is a form section (Section 1)
     let inFormSection = false;
-    
-    // Track seen questions to avoid duplicates
     const seenQuestions = new Set<string>();
-    
-    const formColors = {
-      question: '#b45309',  // Darker orange for labels
-      answer: '#f9fafb',    // White for answers
-    };
     
     const flushList = () => {
       if (listItems.length > 0) {
@@ -252,7 +242,6 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
       
       if (line.startsWith('### ')) {
         flushList();
-        // Check if this is the form section header
         if (line.includes('FORM OUTPUT') || line.includes('Form Output')) {
           inFormSection = true;
         }
@@ -337,25 +326,21 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
         continue;
       }
       
-      // Check if entering form section
       if (line.includes('FORM OUTPUT') || line.includes('Form Output')) {
         inFormSection = true;
       }
       
-      // In form section, parse "Question: Answer" format on same line
       if (inFormSection) {
         const colonIndex = line.indexOf(': ');
         if (colonIndex > 0) {
           const question = line.substring(0, colonIndex).replace(/\*\*/g, '').trim();
           const answer = line.substring(colonIndex + 2).replace(/\*\*/g, '').trim();
           
-          // Skip if we've already seen this question
           if (seenQuestions.has(question.toLowerCase())) {
             continue;
           }
           seenQuestions.add(question.toLowerCase());
           
-          // Only render if there's an answer
           if (answer.length > 0) {
             elements.push(
               <div key={`field-${elements.length}`} style={{ marginBottom: '12px' }}>
@@ -379,7 +364,6 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
           }
           continue;
         }
-        // If in form section but no colon, skip
         continue;
       }
       
@@ -414,6 +398,7 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
 interface LocalSubmission {
   id: string;
   repName: string;
+  repCode: string;  // v7: added
   athleteName: string;
   grade: string | null;
   output: string;
@@ -421,6 +406,7 @@ interface LocalSubmission {
   timestamp: string;
   interviewDate: string | null;
   flagged: boolean;
+  transcriptHeader: string | null;  // v7: added
 }
 
 interface TrendsReport {
@@ -440,8 +426,9 @@ interface TrendsReport {
 // ============================================
 
 export default function NextPlayCoachingApp() {
-  const [view, setView] = useState<'rep' | 'admin'>('rep');
-  const [adminTab, setAdminTab] = useState<'submissions' | 'instructions' | 'objections' | 'trends'>('submissions');
+  // v7: Added 'mySubmissions' view
+  const [view, setView] = useState<'rep' | 'mySubmissions' | 'admin'>('rep');
+  const [adminTab, setAdminTab] = useState<'submissions' | 'reps' | 'instructions' | 'objections' | 'trends'>('submissions');
   const [isLoading, setIsLoading] = useState(false);
   const [streamingOutput, setStreamingOutput] = useState('');
   const [result, setResult] = useState<LocalSubmission | { error: string } | null>(null);
@@ -464,11 +451,27 @@ export default function NextPlayCoachingApp() {
   const [trendsDateRange, setTrendsDateRange] = useState('30');
   const [showTranscript, setShowTranscript] = useState(false);
   
+  // v7: Rep code state
+  const [repCode, setRepCode] = useState('');
+  const [reps, setReps] = useState<Record<string, Rep>>({});
+  const [showAddRep, setShowAddRep] = useState(false);
+  const [newRepName, setNewRepName] = useState('');
+  const [newRepCode, setNewRepCode] = useState('');
+  const [editingRep, setEditingRep] = useState<string | null>(null);
+  
+  // v7: View My Submissions state
+  const [viewRepCode, setViewRepCode] = useState('');
+  const [isViewLoggedIn, setIsViewLoggedIn] = useState(false);
+  
+  // v7: Submit error state
+  const [submitError, setSubmitError] = useState('');
+  
   const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'nextplay';
 
   useEffect(() => {
     loadSubmissions();
     loadSettings();
+    loadReps();  // v7
   }, []);
   
   const normalizeRepName = (name: string) => {
@@ -480,6 +483,7 @@ export default function NextPlayCoachingApp() {
   const dbToLocal = (db: Submission): LocalSubmission => ({
     id: db.id,
     repName: db.rep_name,
+    repCode: '',  // Will be populated from reps lookup
     athleteName: db.athlete_name,
     grade: db.grade,
     output: db.output,
@@ -487,6 +491,7 @@ export default function NextPlayCoachingApp() {
     timestamp: db.created_at,
     interviewDate: db.interview_date,
     flagged: db.flagged,
+    transcriptHeader: db.transcript_header,
   });
   
   const loadSubmissions = async () => {
@@ -500,8 +505,23 @@ export default function NextPlayCoachingApp() {
     }
   };
   
+  // v7: Load reps from database
+  const loadReps = async () => {
+    const { data, error } = await supabase
+      .from('reps')
+      .select('*')
+      .order('created_at', { ascending: true });
+    
+    if (data && !error) {
+      const repsMap: Record<string, Rep> = {};
+      data.forEach((rep: Rep) => {
+        repsMap[rep.rep_code] = rep;
+      });
+      setReps(repsMap);
+    }
+  };
+  
   const loadSettings = async () => {
-    // Load system prompt
     const { data: promptData } = await supabase
       .from('settings')
       .select('value')
@@ -512,7 +532,6 @@ export default function NextPlayCoachingApp() {
       setSystemPrompt(promptData.value);
     }
     
-    // Load objection doc
     const { data: objectionData } = await supabase
       .from('settings')
       .select('value')
@@ -557,7 +576,31 @@ export default function NextPlayCoachingApp() {
     setTimeout(() => setObjectionSaved(false), 2000);
   };
   
+  // v7: Validate rep code
+  const validateRepCode = (code: string): Rep | null => {
+    const normalized = code.trim().toLowerCase();
+    return reps[normalized] && reps[normalized].active ? reps[normalized] : null;
+  };
+  
+  // v7: Extract transcript header (first line) for duplicate detection
+  const extractTranscriptHeader = (transcript: string): string => {
+    return transcript.split('\n')[0].trim();
+  };
+  
+  // v7: Check for duplicate transcript
+  const checkDuplicate = async (header: string): Promise<boolean> => {
+    const { data } = await supabase
+      .from('submissions')
+      .select('id')
+      .eq('transcript_header', header)
+      .limit(1);
+    
+    return data && data.length > 0;
+  };
+  
   const saveSubmission = async (submission: LocalSubmission) => {
+    const rep = validateRepCode(submission.repCode);
+    
     const { data, error } = await supabase.from('submissions').insert({
       rep_name: submission.repName,
       athlete_name: submission.athleteName,
@@ -566,13 +609,17 @@ export default function NextPlayCoachingApp() {
       transcript: submission.transcript,
       interview_date: submission.interviewDate,
       flagged: submission.flagged,
+      transcript_header: submission.transcriptHeader,  // v7
+      rep_id: rep?.id || null,  // v7
     }).select().single();
     
     if (!error && data) {
       const savedSubmission = { ...submission, id: data.id };
       setSubmissions(prev => [savedSubmission, ...prev]);
+      return savedSubmission;
     } else {
       console.error('Error saving submission:', error);
+      return null;
     }
   };
   
@@ -716,6 +763,12 @@ export default function NextPlayCoachingApp() {
     return nameMatch ? nameMatch[1].trim() : 'Unknown';
   };
   
+  // v7: Extract athlete name from transcript header
+  const extractAthleteNameFromHeader = (header: string): string => {
+    const match = header.match(/Athlete Interview with (.+?)\s*-/i);
+    return match ? match[1].trim() : 'Unknown';
+  };
+  
   const extractInterviewDate = (transcript: string) => {
     const patterns = [
       /(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}(?:\s+[A-Z]{2,4})?)/i,
@@ -742,14 +795,31 @@ export default function NextPlayCoachingApp() {
     return null;
   };
   
+  // v7: Updated handleSubmit with rep code validation and duplicate check
   const handleSubmit = async () => {
-    const nameInput = document.getElementById('rep-name-input') as HTMLInputElement;
-    const transcriptInput = document.getElementById('transcript-input') as HTMLTextAreaElement;
-    const name = nameInput?.value?.trim();
-    const transcriptText = transcriptInput?.value?.trim();
+    setSubmitError('');
     
-    if (!name || !transcriptText) {
-      alert('Please enter your name and paste a transcript');
+    const transcriptInput = document.getElementById('transcript-input') as HTMLTextAreaElement;
+    const transcriptText = transcriptInput?.value?.trim();
+    const normalizedCode = repCode.trim().toLowerCase();
+    
+    // Validate rep code
+    const rep = validateRepCode(normalizedCode);
+    if (!rep) {
+      setSubmitError('Rep code not recognized. Contact your admin.');
+      return;
+    }
+    
+    if (!transcriptText) {
+      setSubmitError('Please paste a transcript.');
+      return;
+    }
+    
+    // v7: Check for duplicate
+    const header = extractTranscriptHeader(transcriptText);
+    const isDuplicate = await checkDuplicate(header);
+    if (isDuplicate) {
+      setSubmitError('This transcript has already been submitted.');
       return;
     }
     
@@ -761,7 +831,7 @@ export default function NextPlayCoachingApp() {
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transcript: transcriptText, repName: name }),
+        body: JSON.stringify({ transcript: transcriptText, repName: rep.rep_name }),
       });
       
       const reader = response.body?.getReader();
@@ -799,12 +869,13 @@ export default function NextPlayCoachingApp() {
       }
       
       const grade = extractGrade(fullOutput);
-      const athleteName = extractAthleteName(fullOutput);
+      const athleteName = extractAthleteNameFromHeader(header) || extractAthleteName(fullOutput);
       const interviewDate = extractInterviewDate(transcriptText);
       
       const submission: LocalSubmission = {
         id: Date.now().toString(),
-        repName: name,
+        repName: rep.rep_name,
+        repCode: normalizedCode,
         athleteName,
         grade,
         output: fullOutput,
@@ -812,10 +883,15 @@ export default function NextPlayCoachingApp() {
         timestamp: new Date().toISOString(),
         interviewDate,
         flagged: ['B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F'].includes(grade || ''),
+        transcriptHeader: header,
       };
       
-      await saveSubmission(submission);
-      setResult(submission);
+      const saved = await saveSubmission(submission);
+      if (saved) {
+        setResult(saved);
+      } else {
+        setResult(submission);
+      }
       setStreamingOutput('');
       
     } catch (error) {
@@ -824,6 +900,76 @@ export default function NextPlayCoachingApp() {
     }
     
     setIsLoading(false);
+  };
+  
+  // v7: Add rep
+  const handleAddRep = async () => {
+    if (!newRepName.trim() || !newRepCode.trim()) return;
+    
+    const code = newRepCode.trim().toLowerCase();
+    
+    if (reps[code]) {
+      alert('This code already exists.');
+      return;
+    }
+    
+    const { data, error } = await supabase.from('reps').insert({
+      rep_name: newRepName.trim(),
+      rep_code: code,
+      active: true,
+    }).select().single();
+    
+    if (!error && data) {
+      setReps(prev => ({ ...prev, [code]: data }));
+      setNewRepName('');
+      setNewRepCode('');
+      setShowAddRep(false);
+    } else {
+      alert('Failed to add rep. Code may already exist.');
+    }
+  };
+  
+  // v7: Update rep
+  const handleUpdateRep = async (oldCode: string, newName: string, newCode: string) => {
+    const rep = reps[oldCode];
+    if (!rep) return;
+    
+    const normalizedNewCode = newCode.trim().toLowerCase();
+    
+    const { error } = await supabase.from('reps')
+      .update({ rep_name: newName.trim(), rep_code: normalizedNewCode })
+      .eq('id', rep.id);
+    
+    if (!error) {
+      // Update local state
+      const updatedReps = { ...reps };
+      delete updatedReps[oldCode];
+      updatedReps[normalizedNewCode] = { ...rep, rep_name: newName.trim(), rep_code: normalizedNewCode };
+      setReps(updatedReps);
+      setEditingRep(null);
+      
+      // Reload submissions to reflect name changes
+      loadSubmissions();
+    } else {
+      alert('Failed to update rep.');
+    }
+  };
+  
+  // v7: Toggle rep active status
+  const handleToggleRepActive = async (code: string) => {
+    const rep = reps[code];
+    if (!rep) return;
+    
+    const { error } = await supabase.from('reps')
+      .update({ active: !rep.active })
+      .eq('id', rep.id);
+    
+    if (!error) {
+      setReps(prev => ({
+        ...prev,
+        [code]: { ...prev[code], active: !prev[code].active }
+      }));
+    }
   };
   
   // Filter submissions
@@ -860,10 +1006,16 @@ export default function NextPlayCoachingApp() {
     return true;
   });
   
-  const repNames = Array.from(new Set(submissions.map(s => normalizeRepName(s.repName)))).filter(Boolean);
+  // v7: Get submissions for current rep (View My Submissions)
+  const mySubmissions = submissions.filter(s => {
+    const rep = validateRepCode(viewRepCode);
+    return rep && normalizeRepName(s.repName) === normalizeRepName(rep.rep_name);
+  });
   
+  const repNames = Array.from(new Set(submissions.map(s => normalizeRepName(s.repName)))).filter(Boolean);
+
   // ============================================
-  // REP VIEW
+  // REP VIEW (Submit Transcript)
   // ============================================
   
   const RepView = () => (
@@ -908,6 +1060,7 @@ export default function NextPlayCoachingApp() {
               padding: '32px',
               border: `1px solid ${styles.colors.border}`,
             }}>
+              {/* v7: Rep Code Input */}
               <div style={{ marginBottom: '24px' }}>
                 <label style={{
                   display: 'block',
@@ -918,24 +1071,36 @@ export default function NextPlayCoachingApp() {
                   letterSpacing: '1px',
                   marginBottom: '8px',
                 }}>
-                  Your Name
+                  Rep Code
                 </label>
-                <input
-                  type="text"
-                  id="rep-name-input"
-                  placeholder="e.g., Will Daffron"
-                  style={{
-                    width: '100%',
-                    padding: '14px 16px',
-                    backgroundColor: styles.colors.bg,
-                    border: `1px solid ${styles.colors.border}`,
-                    borderRadius: '8px',
-                    color: styles.colors.text,
-                    fontSize: '16px',
-                    outline: 'none',
-                    boxSizing: 'border-box',
-                  }}
-                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <input
+                    type="text"
+                    value={repCode}
+                    onChange={(e) => setRepCode(e.target.value)}
+                    placeholder="e.g., will-223"
+                    style={{
+                      width: '200px',
+                      padding: '14px 16px',
+                      backgroundColor: styles.colors.bg,
+                      border: `1px solid ${styles.colors.border}`,
+                      borderRadius: '8px',
+                      color: styles.colors.text,
+                      fontSize: '16px',
+                      outline: 'none',
+                    }}
+                  />
+                  {repCode && (
+                    <span style={{
+                      fontSize: '14px',
+                      color: validateRepCode(repCode) ? styles.colors.accent : styles.colors.danger,
+                    }}>
+                      {validateRepCode(repCode) 
+                        ? `✓ ${validateRepCode(repCode)!.rep_name}`
+                        : '✗ Code not recognized'}
+                    </span>
+                  )}
+                </div>
               </div>
               
               <div style={{ marginBottom: '24px' }}>
@@ -952,7 +1117,7 @@ export default function NextPlayCoachingApp() {
                 </label>
                 <textarea
                   id="transcript-input"
-                  placeholder="Paste your full interview transcript here..."
+                  placeholder="Athlete Interview with Mike Strong - 2026/04/08 18:51 CDT - Transcript..."
                   style={{
                     width: '100%',
                     minHeight: '300px',
@@ -969,6 +1134,9 @@ export default function NextPlayCoachingApp() {
                     boxSizing: 'border-box',
                   }}
                 />
+                <p style={{ fontSize: '12px', color: styles.colors.textMuted, marginTop: '8px' }}>
+                  Athlete name and date will be extracted from the first line.
+                </p>
               </div>
               
               <button
@@ -989,6 +1157,21 @@ export default function NextPlayCoachingApp() {
               >
                 {isLoading ? 'Analyzing...' : 'Get Coaching Feedback'}
               </button>
+              
+              {/* v7: Error display */}
+              {submitError && (
+                <div style={{
+                  marginTop: '16px',
+                  padding: '12px 16px',
+                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                  border: `1px solid ${styles.colors.danger}`,
+                  borderRadius: '8px',
+                  color: styles.colors.danger,
+                  fontSize: '14px',
+                }}>
+                  {submitError}
+                </div>
+              )}
             </div>
             
             {isLoading && (
@@ -1007,98 +1190,403 @@ export default function NextPlayCoachingApp() {
               </div>
             )}
           </>
-        ) : 'error' in result ? (
-          <div style={{
-            backgroundColor: styles.colors.bgCard,
-            borderRadius: '12px',
-            padding: '32px',
-            border: `1px solid ${styles.colors.danger}`,
-            textAlign: 'center',
-          }}>
-            <p style={{ color: styles.colors.danger, marginBottom: '16px' }}>{result.error}</p>
-            <button
-              onClick={() => setResult(null)}
-              style={{
-                padding: '12px 24px',
-                backgroundColor: styles.colors.bgHover,
-                color: styles.colors.text,
-                border: 'none',
-                borderRadius: '8px',
-                cursor: 'pointer',
-              }}
-            >
-              Try Again
-            </button>
-          </div>
         ) : (
-          <>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              marginBottom: '24px',
-              padding: '20px 24px',
-              backgroundColor: styles.colors.bgCard,
-              borderRadius: '12px',
-              border: `1px solid ${styles.colors.border}`,
-            }}>
-              <div>
-                <h2 style={{
-                  color: styles.colors.text,
-                  fontSize: '20px',
-                  fontWeight: '700',
-                  margin: '0 0 4px 0',
-                }}>
-                  {result.athleteName}
-                </h2>
-                <p style={{
-                  color: styles.colors.textMuted,
-                  fontSize: '14px',
-                  margin: 0,
-                }}>
-                  Interviewed by {result.repName}
-                </p>
-              </div>
-              <GradeBadge grade={result.grade} />
-            </div>
-            
+          'error' in result ? (
             <div style={{
               backgroundColor: styles.colors.bgCard,
               borderRadius: '12px',
               padding: '32px',
-              border: `1px solid ${styles.colors.border}`,
-              marginBottom: '24px',
+              border: `1px solid ${styles.colors.danger}`,
+              textAlign: 'center',
             }}>
-              <MarkdownRenderer content={result.output} />
+              <p style={{ color: styles.colors.danger, fontSize: '16px', marginBottom: '16px' }}>
+                {result.error}
+              </p>
+              <button
+                onClick={() => setResult(null)}
+                style={{
+                  padding: '12px 24px',
+                  backgroundColor: styles.colors.accent,
+                  color: '#000',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                }}
+              >
+                Try Again
+              </button>
             </div>
-            
-            <button
-              onClick={() => setResult(null)}
-              style={{
-                width: '100%',
-                padding: '16px',
-                backgroundColor: styles.colors.bgHover,
-                color: styles.colors.text,
-                border: `1px solid ${styles.colors.border}`,
+          ) : (
+            <div>
+              {/* v7: Success banner with submission ID */}
+              <div style={{
+                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                border: `1px solid ${styles.colors.accent}`,
                 borderRadius: '8px',
-                fontSize: '16px',
-                fontWeight: '600',
-                cursor: 'pointer',
-              }}
-            >
-              Submit Another Transcript
-            </button>
-          </>
+                padding: '16px 20px',
+                marginBottom: '24px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}>
+                <div>
+                  <span style={{ color: styles.colors.accent, fontWeight: '700' }}>
+                    ✓ Submission #{result.id.slice(-6)} saved
+                  </span>
+                  <span style={{ color: styles.colors.textMuted, marginLeft: '12px' }}>
+                    {result.athleteName}
+                  </span>
+                </div>
+                <GradeBadge grade={result.grade} />
+              </div>
+              
+              <div style={{
+                backgroundColor: styles.colors.bgCard,
+                borderRadius: '12px',
+                border: `1px solid ${styles.colors.border}`,
+                overflow: 'hidden',
+              }}>
+                {/* Results/Transcript toggle */}
+                <div style={{ display: 'flex', borderBottom: `1px solid ${styles.colors.border}` }}>
+                  <button
+                    onClick={() => setShowTranscript(false)}
+                    style={{
+                      flex: 1,
+                      padding: '14px',
+                      backgroundColor: !showTranscript ? styles.colors.bgHover : 'transparent',
+                      border: 'none',
+                      color: !showTranscript ? styles.colors.text : styles.colors.textMuted,
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Results
+                  </button>
+                  <button
+                    onClick={() => setShowTranscript(true)}
+                    style={{
+                      flex: 1,
+                      padding: '14px',
+                      backgroundColor: showTranscript ? styles.colors.bgHover : 'transparent',
+                      border: 'none',
+                      color: showTranscript ? styles.colors.text : styles.colors.textMuted,
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Transcript
+                  </button>
+                </div>
+                
+                <div style={{ padding: '24px' }}>
+                  {showTranscript ? (
+                    <pre style={{
+                      whiteSpace: 'pre-wrap',
+                      fontFamily: "'Space Mono', monospace",
+                      fontSize: '13px',
+                      lineHeight: '1.6',
+                      color: styles.colors.textMuted,
+                      margin: 0,
+                    }}>
+                      {result.transcript}
+                    </pre>
+                  ) : (
+                    <MarkdownRenderer content={result.output} />
+                  )}
+                </div>
+              </div>
+              
+              <button
+                onClick={() => {
+                  setResult(null);
+                  setRepCode('');
+                  setShowTranscript(false);
+                  const input = document.getElementById('transcript-input') as HTMLTextAreaElement;
+                  if (input) input.value = '';
+                }}
+                style={{
+                  marginTop: '24px',
+                  padding: '12px 24px',
+                  backgroundColor: 'transparent',
+                  border: `1px solid ${styles.colors.border}`,
+                  borderRadius: '8px',
+                  color: styles.colors.text,
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                }}
+              >
+                ← Submit Another Transcript
+              </button>
+            </div>
+          )
         )}
       </div>
     </div>
   );
+
+  // ============================================
+  // v7: MY SUBMISSIONS VIEW
+  // ============================================
   
+  const MySubmissionsView = () => (
+    <div style={{
+      minHeight: '100vh',
+      backgroundColor: styles.colors.bg,
+      padding: '40px 20px',
+    }}>
+      <div style={{ maxWidth: '900px', margin: '0 auto' }}>
+        <h1 style={{
+          color: styles.colors.text,
+          fontSize: '28px',
+          fontWeight: '800',
+          marginBottom: '24px',
+        }}>
+          📋 View My Submissions
+        </h1>
+        
+        {!isViewLoggedIn ? (
+          <div style={{
+            backgroundColor: styles.colors.bgCard,
+            borderRadius: '12px',
+            padding: '32px',
+            border: `1px solid ${styles.colors.border}`,
+            maxWidth: '400px',
+          }}>
+            <label style={{
+              display: 'block',
+              color: styles.colors.textMuted,
+              fontSize: '12px',
+              fontWeight: '600',
+              textTransform: 'uppercase',
+              letterSpacing: '1px',
+              marginBottom: '8px',
+            }}>
+              Enter Your Rep Code
+            </label>
+            <input
+              type="text"
+              value={viewRepCode}
+              onChange={(e) => setViewRepCode(e.target.value)}
+              placeholder="e.g., will-223"
+              style={{
+                width: '100%',
+                padding: '14px 16px',
+                backgroundColor: styles.colors.bg,
+                border: `1px solid ${styles.colors.border}`,
+                borderRadius: '8px',
+                color: styles.colors.text,
+                fontSize: '16px',
+                outline: 'none',
+                marginBottom: '16px',
+                boxSizing: 'border-box',
+              }}
+            />
+            <button
+              onClick={() => {
+                const rep = validateRepCode(viewRepCode);
+                if (rep) {
+                  setIsViewLoggedIn(true);
+                } else {
+                  alert('Rep code not recognized.');
+                }
+              }}
+              style={{
+                width: '100%',
+                padding: '14px',
+                backgroundColor: styles.colors.accent,
+                color: '#000',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '16px',
+                fontWeight: '700',
+                cursor: 'pointer',
+              }}
+            >
+              View Submissions
+            </button>
+          </div>
+        ) : (
+          <div>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '24px',
+            }}>
+              <span style={{ color: styles.colors.textMuted }}>
+                {validateRepCode(viewRepCode)?.rep_name} · {mySubmissions.length} submissions
+              </span>
+              <button
+                onClick={() => {
+                  setIsViewLoggedIn(false);
+                  setViewRepCode('');
+                  setSelectedSubmission(null);
+                }}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: 'transparent',
+                  border: `1px solid ${styles.colors.border}`,
+                  borderRadius: '6px',
+                  color: styles.colors.textMuted,
+                  cursor: 'pointer',
+                }}
+              >
+                Log Out
+              </button>
+            </div>
+            
+            {selectedSubmission ? (
+              <div>
+                <button
+                  onClick={() => setSelectedSubmission(null)}
+                  style={{
+                    marginBottom: '16px',
+                    padding: '8px 16px',
+                    backgroundColor: 'transparent',
+                    border: `1px solid ${styles.colors.border}`,
+                    borderRadius: '6px',
+                    color: styles.colors.text,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ← Back to List
+                </button>
+                
+                <div style={{
+                  backgroundColor: styles.colors.bgCard,
+                  borderRadius: '12px',
+                  border: `1px solid ${styles.colors.border}`,
+                  overflow: 'hidden',
+                }}>
+                  <div style={{
+                    padding: '20px 24px',
+                    borderBottom: `1px solid ${styles.colors.border}`,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}>
+                    <div>
+                      <h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: 0 }}>
+                        {selectedSubmission.athleteName}
+                      </h2>
+                      <p style={{ color: styles.colors.textMuted, fontSize: '14px', margin: '4px 0 0' }}>
+                        {selectedSubmission.interviewDate 
+                          ? new Date(selectedSubmission.interviewDate).toLocaleDateString()
+                          : new Date(selectedSubmission.timestamp).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <GradeBadge grade={selectedSubmission.grade} />
+                  </div>
+                  
+                  <div style={{ display: 'flex', borderBottom: `1px solid ${styles.colors.border}` }}>
+                    <button
+                      onClick={() => setShowTranscript(false)}
+                      style={{
+                        flex: 1,
+                        padding: '12px',
+                        backgroundColor: !showTranscript ? styles.colors.bgHover : 'transparent',
+                        border: 'none',
+                        color: !showTranscript ? styles.colors.text : styles.colors.textMuted,
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Results
+                    </button>
+                    <button
+                      onClick={() => setShowTranscript(true)}
+                      style={{
+                        flex: 1,
+                        padding: '12px',
+                        backgroundColor: showTranscript ? styles.colors.bgHover : 'transparent',
+                        border: 'none',
+                        color: showTranscript ? styles.colors.text : styles.colors.textMuted,
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Transcript
+                    </button>
+                  </div>
+                  
+                  <div style={{ padding: '24px', maxHeight: '500px', overflow: 'auto' }}>
+                    {showTranscript ? (
+                      <pre style={{
+                        whiteSpace: 'pre-wrap',
+                        fontFamily: "'Space Mono', monospace",
+                        fontSize: '13px',
+                        lineHeight: '1.6',
+                        color: styles.colors.textMuted,
+                        margin: 0,
+                      }}>
+                        {selectedSubmission.transcript}
+                      </pre>
+                    ) : (
+                      <MarkdownRenderer content={selectedSubmission.output} />
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div style={{
+                backgroundColor: styles.colors.bgCard,
+                borderRadius: '12px',
+                border: `1px solid ${styles.colors.border}`,
+                overflow: 'hidden',
+              }}>
+                {mySubmissions.length === 0 ? (
+                  <div style={{ padding: '40px', textAlign: 'center', color: styles.colors.textMuted }}>
+                    No submissions yet
+                  </div>
+                ) : (
+                  mySubmissions.map(sub => (
+                    <div
+                      key={sub.id}
+                      onClick={() => { setSelectedSubmission(sub); setShowTranscript(false); }}
+                      style={{
+                        padding: '16px 24px',
+                        borderBottom: `1px solid ${styles.colors.border}`,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <div>
+                        <p style={{ color: styles.colors.text, fontWeight: '600', margin: '0 0 4px' }}>
+                          {sub.athleteName}
+                        </p>
+                        <p style={{ color: styles.colors.textMuted, fontSize: '13px', margin: 0 }}>
+                          {sub.interviewDate 
+                            ? new Date(sub.interviewDate).toLocaleDateString()
+                            : new Date(sub.timestamp).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <GradeBadge grade={sub.grade} />
+                        <span style={{ color: styles.colors.textMuted }}>→</span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   // ============================================
   // ADMIN VIEW
   // ============================================
   
   const AdminView = () => {
+    const [adminPw, setAdminPw] = useState('');
+    
     if (!isAuthenticated) {
       return (
         <div style={{
@@ -1136,10 +1624,11 @@ export default function NextPlayCoachingApp() {
             </p>
             <input
               type="password"
-              id="admin-password"
+              value={adminPw}
+              onChange={(e) => setAdminPw(e.target.value)}
               placeholder="Password"
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.target as HTMLInputElement).value === ADMIN_PASSWORD) {
+                if (e.key === 'Enter' && adminPw === ADMIN_PASSWORD) {
                   setIsAuthenticated(true);
                 }
               }}
@@ -1158,8 +1647,7 @@ export default function NextPlayCoachingApp() {
             />
             <button
               onClick={() => {
-                const pw = (document.getElementById('admin-password') as HTMLInputElement)?.value;
-                if (pw === ADMIN_PASSWORD) {
+                if (adminPw === ADMIN_PASSWORD) {
                   setIsAuthenticated(true);
                 }
               }}
@@ -1215,7 +1703,7 @@ export default function NextPlayCoachingApp() {
             </div>
           </div>
           
-          {/* Admin Tabs */}
+          {/* Admin Tabs - v7: Added 'reps' tab */}
           <div style={{
             display: 'flex',
             gap: '8px',
@@ -1224,7 +1712,7 @@ export default function NextPlayCoachingApp() {
             paddingBottom: '16px',
             flexWrap: 'wrap',
           }}>
-            {(['submissions', 'instructions', 'objections', 'trends'] as const).map(tab => (
+            {(['submissions', 'reps', 'instructions', 'objections', 'trends'] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => setAdminTab(tab)}
@@ -1240,6 +1728,7 @@ export default function NextPlayCoachingApp() {
                 }}
               >
                 {tab === 'submissions' && '📋 Submissions'}
+                {tab === 'reps' && '👥 Manage Reps'}
                 {tab === 'instructions' && '⚙️ Edit Instructions'}
                 {tab === 'objections' && '💬 Objection Handling'}
                 {tab === 'trends' && '📈 Trends Report'}
@@ -1248,7 +1737,254 @@ export default function NextPlayCoachingApp() {
           </div>
           
           {/* Tab Content */}
-          {adminTab === 'instructions' ? (
+          
+          {/* v7: MANAGE REPS TAB */}
+          {adminTab === 'reps' && (
+            <div>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '16px',
+              }}>
+                <h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: 0 }}>
+                  Rep Codes
+                </h2>
+                <button
+                  onClick={() => setShowAddRep(true)}
+                  style={{
+                    padding: '10px 16px',
+                    backgroundColor: styles.colors.accent,
+                    color: '#000',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                  }}
+                >
+                  + Add Rep
+                </button>
+              </div>
+              
+              {showAddRep && (
+                <div style={{
+                  backgroundColor: styles.colors.bgCard,
+                  borderRadius: '12px',
+                  padding: '20px',
+                  border: `1px solid ${styles.colors.border}`,
+                  marginBottom: '16px',
+                }}>
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                    <div>
+                      <label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', marginBottom: '6px' }}>
+                        Rep Name
+                      </label>
+                      <input
+                        type="text"
+                        value={newRepName}
+                        onChange={(e) => setNewRepName(e.target.value)}
+                        placeholder="Will Daffron"
+                        style={{
+                          padding: '10px 14px',
+                          backgroundColor: styles.colors.bg,
+                          border: `1px solid ${styles.colors.border}`,
+                          borderRadius: '6px',
+                          color: styles.colors.text,
+                          width: '180px',
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', marginBottom: '6px' }}>
+                        Code
+                      </label>
+                      <input
+                        type="text"
+                        value={newRepCode}
+                        onChange={(e) => setNewRepCode(e.target.value)}
+                        placeholder="will-223"
+                        style={{
+                          padding: '10px 14px',
+                          backgroundColor: styles.colors.bg,
+                          border: `1px solid ${styles.colors.border}`,
+                          borderRadius: '6px',
+                          color: styles.colors.text,
+                          width: '140px',
+                          fontFamily: 'monospace',
+                        }}
+                      />
+                    </div>
+                    <button
+                      onClick={handleAddRep}
+                      style={{
+                        padding: '10px 16px',
+                        backgroundColor: styles.colors.accent,
+                        color: '#000',
+                        border: 'none',
+                        borderRadius: '6px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => { setShowAddRep(false); setNewRepName(''); setNewRepCode(''); }}
+                      style={{
+                        padding: '10px 16px',
+                        backgroundColor: 'transparent',
+                        border: `1px solid ${styles.colors.border}`,
+                        borderRadius: '6px',
+                        color: styles.colors.textMuted,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+              
+              <div style={{
+                backgroundColor: styles.colors.bgCard,
+                borderRadius: '12px',
+                border: `1px solid ${styles.colors.border}`,
+                overflow: 'hidden',
+              }}>
+                {Object.keys(reps).length === 0 ? (
+                  <div style={{ padding: '40px', textAlign: 'center', color: styles.colors.textMuted }}>
+                    No reps yet. Add your first rep above.
+                  </div>
+                ) : (
+                  Object.entries(reps).map(([code, rep]) => (
+                    <div
+                      key={code}
+                      style={{
+                        padding: '16px 24px',
+                        borderBottom: `1px solid ${styles.colors.border}`,
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        opacity: rep.active ? 1 : 0.5,
+                      }}
+                    >
+                      {editingRep === code ? (
+                        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flex: 1 }}>
+                          <input
+                            type="text"
+                            defaultValue={rep.rep_name}
+                            id={`edit-name-${code}`}
+                            style={{
+                              padding: '8px 12px',
+                              backgroundColor: styles.colors.bg,
+                              border: `1px solid ${styles.colors.border}`,
+                              borderRadius: '6px',
+                              color: styles.colors.text,
+                              width: '160px',
+                            }}
+                          />
+                          <input
+                            type="text"
+                            defaultValue={code}
+                            id={`edit-code-${code}`}
+                            style={{
+                              padding: '8px 12px',
+                              backgroundColor: styles.colors.bg,
+                              border: `1px solid ${styles.colors.border}`,
+                              borderRadius: '6px',
+                              color: styles.colors.text,
+                              width: '120px',
+                              fontFamily: 'monospace',
+                            }}
+                          />
+                          <button
+                            onClick={() => {
+                              const newName = (document.getElementById(`edit-name-${code}`) as HTMLInputElement).value;
+                              const newCode = (document.getElementById(`edit-code-${code}`) as HTMLInputElement).value;
+                              handleUpdateRep(code, newName, newCode);
+                            }}
+                            style={{
+                              padding: '8px 12px',
+                              backgroundColor: styles.colors.accent,
+                              color: '#000',
+                              border: 'none',
+                              borderRadius: '6px',
+                              fontWeight: '600',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={() => setEditingRep(null)}
+                            style={{
+                              padding: '8px 12px',
+                              backgroundColor: 'transparent',
+                              border: `1px solid ${styles.colors.border}`,
+                              borderRadius: '6px',
+                              color: styles.colors.textMuted,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div>
+                            <p style={{ color: styles.colors.text, fontWeight: '600', margin: '0 0 2px' }}>
+                              {rep.rep_name}
+                              {!rep.active && (
+                                <span style={{ color: styles.colors.danger, fontSize: '12px', marginLeft: '8px' }}>
+                                  (Inactive)
+                                </span>
+                              )}
+                            </p>
+                            <p style={{ color: styles.colors.textMuted, fontSize: '13px', fontFamily: 'monospace', margin: 0 }}>
+                              {code}
+                            </p>
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              onClick={() => setEditingRep(code)}
+                              style={{
+                                padding: '6px 12px',
+                                backgroundColor: 'transparent',
+                                border: `1px solid ${styles.colors.border}`,
+                                borderRadius: '6px',
+                                color: styles.colors.textMuted,
+                                fontSize: '13px',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleToggleRepActive(code)}
+                              style={{
+                                padding: '6px 12px',
+                                backgroundColor: 'transparent',
+                                border: `1px solid ${styles.colors.border}`,
+                                borderRadius: '6px',
+                                color: rep.active ? styles.colors.danger : styles.colors.accent,
+                                fontSize: '13px',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {rep.active ? 'Deactivate' : 'Activate'}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+          
+          {/* EDIT INSTRUCTIONS TAB */}
+          {adminTab === 'instructions' && (
             <div>
               <div style={{
                 backgroundColor: styles.colors.bgCard,
@@ -1330,7 +2066,10 @@ export default function NextPlayCoachingApp() {
                 </button>
               </div>
             </div>
-          ) : adminTab === 'objections' ? (
+          )}
+          
+          {/* OBJECTION HANDLING TAB */}
+          {adminTab === 'objections' && (
             <div>
               <div style={{
                 backgroundColor: styles.colors.bgCard,
@@ -1350,7 +2089,7 @@ export default function NextPlayCoachingApp() {
                       Objection Handling
                     </h2>
                     <p style={{ color: styles.colors.textMuted, fontSize: '13px', margin: 0 }}>
-                      Add examples of how to handle common objections.
+                      Add examples of how to handle common objections. This will be referenced during analysis.
                     </p>
                   </div>
                   {objectionSaved && (
@@ -1362,7 +2101,21 @@ export default function NextPlayCoachingApp() {
                 <textarea
                   value={objectionDoc}
                   onChange={(e) => setObjectionDoc(e.target.value)}
-                  placeholder="Add your objection handling examples here..."
+                  placeholder="Add your objection handling examples here...
+
+Example format:
+
+**Objection: 'I need to think about it'**
+This is a deflection, not a real objection. Don't accept it.
+
+Response: 'What specifically do you need to think about? Is it the commitment? The process? Help me understand what's holding you back so we can address it right now.'
+
+---
+
+**Objection: 'That's expensive'**
+Don't get defensive. Reframe around value.
+
+Response: 'Let's talk about what it costs NOT to have this figured out. How much have you already spent on camps, trainers, and showcases that didn't lead anywhere?'"
                   style={{
                     width: '100%',
                     minHeight: '400px',
@@ -1396,7 +2149,10 @@ export default function NextPlayCoachingApp() {
                 Save Objection Handling
               </button>
             </div>
-          ) : adminTab === 'trends' ? (
+          )}
+          
+          {/* TRENDS REPORT TAB */}
+          {adminTab === 'trends' && (
             <div>
               <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', alignItems: 'center', flexWrap: 'wrap' }}>
                 <select
@@ -1504,13 +2260,13 @@ export default function NextPlayCoachingApp() {
                   ))}
                   
                   <div style={{
-                    marginTop: '20px',
+                    marginTop: '24px',
                     padding: '16px',
                     backgroundColor: styles.colors.accentDim,
                     borderRadius: '8px',
                   }}>
-                    <h3 style={{ color: styles.colors.accent, fontSize: '14px', fontWeight: '700', marginBottom: '8px' }}>
-                      💡 TRAINING RECOMMENDATION
+                    <h3 style={{ color: styles.colors.accent, fontSize: '14px', fontWeight: '700', margin: '0 0 8px' }}>
+                      📌 Training Recommendation
                     </h3>
                     <p style={{ color: styles.colors.text, fontSize: '14px', margin: 0 }}>
                       {trendsReport.recommendation}
@@ -1519,128 +2275,127 @@ export default function NextPlayCoachingApp() {
                 </div>
               )}
             </div>
-          ) : (
+          )}
+          
+          {/* SUBMISSIONS TAB */}
+          {adminTab === 'submissions' && (
             <>
-              {/* Detail View */}
               {selectedSubmission ? (
                 <div>
                   <button
                     onClick={() => setSelectedSubmission(null)}
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      padding: '10px 16px',
-                      backgroundColor: 'transparent',
-                      color: styles.colors.textMuted,
-                      border: 'none',
-                      fontSize: '14px',
-                      cursor: 'pointer',
                       marginBottom: '16px',
+                      padding: '8px 16px',
+                      backgroundColor: 'transparent',
+                      border: `1px solid ${styles.colors.border}`,
+                      borderRadius: '6px',
+                      color: styles.colors.text,
+                      cursor: 'pointer',
                     }}
                   >
-                    ← Back to list
+                    ← Back to List
                   </button>
                   
                   <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    marginBottom: '24px',
-                    padding: '20px 24px',
                     backgroundColor: styles.colors.bgCard,
                     borderRadius: '12px',
                     border: `1px solid ${styles.colors.border}`,
+                    overflow: 'hidden',
                   }}>
-                    <div>
-                      <h2 style={{ color: styles.colors.text, fontSize: '20px', fontWeight: '700', margin: '0 0 4px 0' }}>
-                        {selectedSubmission.athleteName}
-                      </h2>
-                      <p style={{ color: styles.colors.textMuted, fontSize: '14px', margin: 0 }}>
-                        {selectedSubmission.repName} • {new Date(selectedSubmission.timestamp).toLocaleDateString()}
-                      </p>
+                    <div style={{
+                      padding: '20px 24px',
+                      borderBottom: `1px solid ${styles.colors.border}`,
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}>
+                      <div>
+                        <h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: 0 }}>
+                          {selectedSubmission.athleteName}
+                        </h2>
+                        <p style={{ color: styles.colors.textMuted, fontSize: '14px', margin: '4px 0 0' }}>
+                          {selectedSubmission.repName} · {selectedSubmission.interviewDate 
+                            ? new Date(selectedSubmission.interviewDate).toLocaleDateString()
+                            : new Date(selectedSubmission.timestamp).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <GradeBadge grade={selectedSubmission.grade} />
+                        <button
+                          onClick={() => {
+                            if (confirm('Delete this submission?')) {
+                              deleteSubmission(selectedSubmission.id);
+                            }
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            backgroundColor: 'transparent',
+                            border: `1px solid ${styles.colors.danger}`,
+                            borderRadius: '6px',
+                            color: styles.colors.danger,
+                            fontSize: '13px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                      <GradeBadge grade={selectedSubmission.grade} />
+                    
+                    <div style={{ display: 'flex', borderBottom: `1px solid ${styles.colors.border}` }}>
                       <button
-                        onClick={() => deleteSubmission(selectedSubmission.id)}
+                        onClick={() => setShowTranscript(false)}
                         style={{
-                          padding: '8px 16px',
-                          backgroundColor: styles.colors.danger,
-                          color: '#fff',
+                          flex: 1,
+                          padding: '12px',
+                          backgroundColor: !showTranscript ? styles.colors.bgHover : 'transparent',
                           border: 'none',
-                          borderRadius: '6px',
-                          fontSize: '14px',
+                          color: !showTranscript ? styles.colors.text : styles.colors.textMuted,
                           fontWeight: '600',
                           cursor: 'pointer',
                         }}
                       >
-                        Delete
+                        Results
+                      </button>
+                      <button
+                        onClick={() => setShowTranscript(true)}
+                        style={{
+                          flex: 1,
+                          padding: '12px',
+                          backgroundColor: showTranscript ? styles.colors.bgHover : 'transparent',
+                          border: 'none',
+                          color: showTranscript ? styles.colors.text : styles.colors.textMuted,
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Transcript
                       </button>
                     </div>
-                  </div>
-                  
-                  {/* Toggle Transcript */}
-                  <button
-                    onClick={() => setShowTranscript(!showTranscript)}
-                    style={{
-                      padding: '10px 16px',
-                      backgroundColor: styles.colors.bgCard,
-                      color: styles.colors.text,
-                      border: `1px solid ${styles.colors.border}`,
-                      borderRadius: '8px',
-                      fontSize: '14px',
-                      fontWeight: '600',
-                      cursor: 'pointer',
-                      marginBottom: '16px',
-                    }}
-                  >
-                    {showTranscript ? '📄 Hide Transcript' : '📄 Show Transcript'}
-                  </button>
-                  
-                  {showTranscript && (
-                    <div style={{
-                      backgroundColor: styles.colors.bgCard,
-                      borderRadius: '12px',
-                      padding: '24px',
-                      border: `1px solid ${styles.colors.border}`,
-                      marginBottom: '24px',
-                    }}>
-                      <h3 style={{ color: styles.colors.text, fontSize: '16px', fontWeight: '700', marginBottom: '16px' }}>
-                        Original Transcript
-                      </h3>
-                      <pre style={{
-                        whiteSpace: 'pre-wrap',
-                        color: styles.colors.textMuted,
-                        fontSize: '13px',
-                        fontFamily: "'Space Mono', monospace",
-                        lineHeight: '1.6',
-                        maxHeight: '400px',
-                        overflow: 'auto',
-                      }}>
-                        {selectedSubmission.transcript}
-                      </pre>
+                    
+                    <div style={{ padding: '24px', maxHeight: '500px', overflow: 'auto' }}>
+                      {showTranscript ? (
+                        <pre style={{
+                          whiteSpace: 'pre-wrap',
+                          fontFamily: "'Space Mono', monospace",
+                          fontSize: '13px',
+                          lineHeight: '1.6',
+                          color: styles.colors.textMuted,
+                          margin: 0,
+                        }}>
+                          {selectedSubmission.transcript}
+                        </pre>
+                      ) : (
+                        <MarkdownRenderer content={selectedSubmission.output} />
+                      )}
                     </div>
-                  )}
-                  
-                  <div style={{
-                    backgroundColor: styles.colors.bgCard,
-                    borderRadius: '12px',
-                    padding: '32px',
-                    border: `1px solid ${styles.colors.border}`,
-                  }}>
-                    <MarkdownRenderer content={selectedSubmission.output} />
                   </div>
                 </div>
               ) : (
                 <>
                   {/* Filters */}
-                  <div style={{
-                    display: 'flex',
-                    gap: '12px',
-                    marginBottom: '24px',
-                    flexWrap: 'wrap',
-                  }}>
+                  <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
                     <select
                       value={filterRep}
                       onChange={(e) => setFilterRep(e.target.value)}
@@ -1651,7 +2406,6 @@ export default function NextPlayCoachingApp() {
                         borderRadius: '8px',
                         color: styles.colors.text,
                         fontSize: '14px',
-                        cursor: 'pointer',
                       }}
                     >
                       <option value="all">All Reps</option>
@@ -1670,15 +2424,12 @@ export default function NextPlayCoachingApp() {
                         borderRadius: '8px',
                         color: styles.colors.text,
                         fontSize: '14px',
-                        cursor: 'pointer',
                       }}
                     >
                       <option value="all">All Grades</option>
-                      <option value="A">A</option>
-                      <option value="B">B</option>
-                      <option value="C">C</option>
-                      <option value="D">D</option>
-                      <option value="F">F</option>
+                      <option value="A">A Range</option>
+                      <option value="B">B Range</option>
+                      <option value="C">C or Below</option>
                     </select>
                     
                     <select
@@ -1691,7 +2442,6 @@ export default function NextPlayCoachingApp() {
                         borderRadius: '8px',
                         color: styles.colors.text,
                         fontSize: '14px',
-                        cursor: 'pointer',
                       }}
                     >
                       <option value="all">All Time</option>
@@ -1830,7 +2580,7 @@ export default function NextPlayCoachingApp() {
                             alignItems: 'center',
                             cursor: 'pointer',
                           }}
-                          onClick={() => setSelectedSubmission(sub)}
+                          onClick={() => { setSelectedSubmission(sub); setShowTranscript(false); }}
                         >
                           <input
                             type="checkbox"
@@ -1901,6 +2651,21 @@ export default function NextPlayCoachingApp() {
           Submit Transcript
         </button>
         <button
+          onClick={() => setView('mySubmissions')}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: view === 'mySubmissions' ? styles.colors.accent : 'transparent',
+            color: view === 'mySubmissions' ? '#000' : styles.colors.text,
+            border: view === 'mySubmissions' ? 'none' : `1px solid ${styles.colors.border}`,
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: '600',
+            cursor: 'pointer',
+          }}
+        >
+          View My Submissions
+        </button>
+        <button
           onClick={() => setView('admin')}
           style={{
             padding: '10px 20px',
@@ -1918,7 +2683,7 @@ export default function NextPlayCoachingApp() {
       </nav>
       
       <div style={{ paddingTop: '60px' }}>
-        {view === 'rep' ? <RepView /> : <AdminView />}
+        {view === 'rep' ? <RepView /> : view === 'mySubmissions' ? <MySubmissionsView /> : <AdminView />}
       </div>
     </div>
   );
