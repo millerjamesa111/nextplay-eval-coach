@@ -1325,7 +1325,7 @@ export default function NextPlayCoachingApp() {
         )}
       </div>
     </div>
-  );
+  ));
 
   // ============================================
   // v7: MY SUBMISSIONS VIEW
