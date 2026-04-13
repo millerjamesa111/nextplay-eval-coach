@@ -2683,15 +2683,7 @@ Response: 'Let's talk about what it costs NOT to have this figured out. How much
       </nav>
       
       <div style={{ paddingTop: '60px' }}>
-        <div style={{ display: view === 'rep' ? 'block' : 'none' }}>
-          <RepView />
-        </div>
-        <div style={{ display: view === 'mySubmissions' ? 'block' : 'none' }}>
-          <MySubmissionsView />
-        </div>
-        <div style={{ display: view === 'admin' ? 'block' : 'none' }}>
-          <AdminView />
-        </div>
+        {view === 'rep' ? <RepView /> : view === 'mySubmissions' ? <MySubmissionsView /> : <AdminView />}
       </div>
     </div>
   );
