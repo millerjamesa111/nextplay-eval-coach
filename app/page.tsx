@@ -2683,7 +2683,9 @@ Response: 'Let's talk about what it costs NOT to have this figured out. How much
       </nav>
       
       <div style={{ paddingTop: '60px' }}>
-        {view === 'rep' ? <RepView /> : view === 'mySubmissions' ? <MySubmissionsView /> : <AdminView />}
+        {view === 'rep' && <RepView />}
+        {view === 'mySubmissions' && <MySubmissionsView />}
+        {view === 'admin' && <AdminView />}
       </div>
     </div>
   );
