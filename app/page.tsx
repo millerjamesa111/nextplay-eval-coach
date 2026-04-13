@@ -595,7 +595,7 @@ export default function NextPlayCoachingApp() {
       .eq('transcript_header', header)
       .limit(1);
     
-    return !!(data && data.length > 0);
+    return data && data.length > 0;
   };
   
   const saveSubmission = async (submission: LocalSubmission) => {
@@ -1075,9 +1075,7 @@ export default function NextPlayCoachingApp() {
                 </label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                   <input
-                    key="rep-code-input"
                     type="text"
-                    id="rep-code-input"
                     value={repCode}
                     onChange={(e) => setRepCode(e.target.value)}
                     placeholder="e.g., will-223"
@@ -1092,6 +1090,16 @@ export default function NextPlayCoachingApp() {
                       outline: 'none',
                     }}
                   />
+                  {repCode && (
+                    <span style={{
+                      fontSize: '14px',
+                      color: validateRepCode(repCode) ? styles.colors.accent : styles.colors.danger,
+                    }}>
+                      {validateRepCode(repCode) 
+                        ? `✓ ${validateRepCode(repCode)!.rep_name}`
+                        : '✗ Code not recognized'}
+                    </span>
+                  )}
                 </div>
               </div>
               
@@ -2675,7 +2683,15 @@ Response: 'Let's talk about what it costs NOT to have this figured out. How much
       </nav>
       
       <div style={{ paddingTop: '60px' }}>
-        {view === 'rep' ? <RepView /> : view === 'mySubmissions' ? <MySubmissionsView /> : <AdminView />}
+        <div style={{ display: view === 'rep' ? 'block' : 'none' }}>
+          <RepView />
+        </div>
+        <div style={{ display: view === 'mySubmissions' ? 'block' : 'none' }}>
+          <MySubmissionsView />
+        </div>
+        <div style={{ display: view === 'admin' ? 'block' : 'none' }}>
+          <AdminView />
+        </div>
       </div>
     </div>
   );
