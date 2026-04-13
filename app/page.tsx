@@ -595,7 +595,7 @@ export default function NextPlayCoachingApp() {
       .eq('transcript_header', header)
       .limit(1);
     
-    return data && data.length > 0;
+    return !!(data && data.length > 0);
   };
   
   const saveSubmission = async (submission: LocalSubmission) => {
