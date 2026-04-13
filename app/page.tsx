@@ -1075,6 +1075,7 @@ export default function NextPlayCoachingApp() {
                 </label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                   <input
+                    key="rep-code-input"
                     type="text"
                     id="rep-code-input"
                     value={repCode}
