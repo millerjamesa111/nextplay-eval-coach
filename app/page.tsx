@@ -1011,7 +1011,7 @@ export default function NextPlayCoachingApp() {
                               <span style={{ color: styles.colors.text, fontSize: '14px', fontWeight: '600' }}>{sub.flagged && <span style={{ marginRight: '8px' }}>🚩</span>}{sub.athleteName}</span>
                               <span style={{ color: styles.colors.textMuted, fontSize: '14px' }}>{sub.repName}</span>
                               <GradeBadge grade={sub.grade} />
-                              <span style={{ color: styles.colors.text, fontSize: '13px' }}>{sub.interviewDate ? new Date(sub.interviewDate).toLocaleDateString() : '—'}</span>
+                              <span style={{ color: styles.colors.text, fontSize: '13px' }}>{new Date(sub.interviewDate || sub.timestamp).toLocaleDateString()}</span>
                               <span style={{ color: styles.colors.textMuted, fontSize: '13px' }}>{new Date(sub.timestamp).toLocaleDateString()}</span>
                               <span style={{ color: styles.colors.textMuted, fontSize: '14px' }}>→</span>
                             </div>
