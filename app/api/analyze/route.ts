@@ -26,16 +26,16 @@ export async function POST(request: NextRequest) {
 
     const systemPrompt = promptData?.value || DEFAULT_SYSTEM_PROMPT;
 
-    // Get objection handling doc if exists
-    const { data: objectionData } = await supabase
+    // Get coaching reference library if exists
+    const { data: coachingRefData } = await supabase
       .from('settings')
       .select('value')
-      .eq('key', 'objection_doc')
+      .eq('key', 'coaching_reference')
       .single();
 
     let fullSystemPrompt = systemPrompt;
-    if (objectionData?.value) {
-      fullSystemPrompt += `\n\n---\n\n## OBJECTION HANDLING REFERENCE\n\nWhen suggesting sharper versions for objection moments, reference these examples for tone and approach:\n\n${objectionData.value}`;
+    if (coachingRefData?.value) {
+      fullSystemPrompt += `\n\n---\n\n## COACHING REFERENCE LIBRARY\n\nUse the OBJECTION HANDLES section for tone and approach when coaching objection moments. Use the MUST-PULL DISCOVERY THREADS section to check the call: when the parent opened one of these threads BEFORE being sold and the rep did not pull it, flag it in the "Threads Opened But Not Pulled" output section.\n\n${coachingRefData.value}`;
     }
 
     // Prepend the selected call type so the prompt's branching fires automatically
