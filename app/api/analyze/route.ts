@@ -9,7 +9,7 @@ const anthropic = new Anthropic({
 
 export async function POST(request: NextRequest) {
   try {
-    const { transcript, repName } = await request.json();
+    const { transcript, repName, callType } = await request.json();
 
     if (!transcript || !repName) {
       return Response.json({ error: 'Missing transcript or repName' }, { status: 400 });
@@ -38,19 +38,23 @@ export async function POST(request: NextRequest) {
       fullSystemPrompt += `\n\n---\n\n## OBJECTION HANDLING REFERENCE\n\nWhen suggesting sharper versions for objection moments, reference these examples for tone and approach:\n\n${objectionData.value}`;
     }
 
+    // Prepend the selected call type so the prompt's branching fires automatically
+    const callTypeHeader = callType ? `CALL TYPE: ${callType}\n\n` : '';
+    const userContent = `${callTypeHeader}${transcript}`;
+
     // Create streaming response
     const stream = await anthropic.messages.stream({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5',
       max_tokens: 2500,
       system: fullSystemPrompt,
-      messages: [{ role: 'user', content: transcript }],
+      messages: [{ role: 'user', content: userContent }],
     });
 
     const encoder = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
         let fullText = '';
-        
+
         for await (const event of stream) {
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
             const text = event.delta.text;
@@ -58,7 +62,7 @@ export async function POST(request: NextRequest) {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text, fullText })}\n\n`));
           }
         }
-        
+
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true, fullText })}\n\n`));
         controller.close();
       },
