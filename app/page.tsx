@@ -241,8 +241,8 @@ export default function NextPlayCoachingApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
   const [promptSaved, setPromptSaved] = useState(false);
-  const [objectionDoc, setObjectionDoc] = useState('');
-  const [objectionSaved, setObjectionSaved] = useState(false);
+  const [coachingRefDoc, setCoachingRefDoc] = useState('');
+  const [coachingRefSaved, setCoachingRefSaved] = useState(false);
   const [trendsLoading, setTrendsLoading] = useState(false);
   const [trendsReport, setTrendsReport] = useState<TrendsReport | null>(null);
   const [trendsRep, setTrendsRep] = useState('all');
@@ -290,8 +290,8 @@ export default function NextPlayCoachingApp() {
   const loadSettings = async () => {
     const { data: promptData } = await supabase.from('settings').select('value').eq('key', 'system_prompt').single();
     if (promptData?.value) setSystemPrompt(promptData.value);
-    const { data: objectionData } = await supabase.from('settings').select('value').eq('key', 'objection_doc').single();
-    if (objectionData?.value) setObjectionDoc(objectionData.value);
+    const { data: coachingRefData } = await supabase.from('settings').select('value').eq('key', 'coaching_reference').single();
+    if (coachingRefData?.value) setCoachingRefDoc(coachingRefData.value);
   };
   
   const saveSystemPrompt = async (prompt: string) => {
@@ -306,10 +306,10 @@ export default function NextPlayCoachingApp() {
     setPromptSaved(true); setTimeout(() => setPromptSaved(false), 2000);
   };
   
-  const saveObjectionDoc = async (doc: string) => {
-    setObjectionDoc(doc);
-    await supabase.from('settings').upsert({ key: 'objection_doc', value: doc, updated_at: new Date().toISOString() }, { onConflict: 'key' });
-    setObjectionSaved(true); setTimeout(() => setObjectionSaved(false), 2000);
+  const saveCoachingRefDoc = async (doc: string) => {
+    setCoachingRefDoc(doc);
+    await supabase.from('settings').upsert({ key: 'coaching_reference', value: doc, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    setCoachingRefSaved(true); setTimeout(() => setCoachingRefSaved(false), 2000);
   };
   
   const validateRepCode = (code: string): Rep | null => {
@@ -770,7 +770,7 @@ export default function NextPlayCoachingApp() {
                   {(['submissions', 'reps', 'instructions', 'objections', 'trends'] as const).map(tab => (
                     <button key={tab} onClick={() => setAdminTab(tab)}
                       style={{ padding: '10px 20px', backgroundColor: adminTab === tab ? styles.colors.bgHover : 'transparent', color: adminTab === tab ? styles.colors.text : styles.colors.textMuted, border: `1px solid ${adminTab === tab ? styles.colors.border : 'transparent'}`, borderRadius: '8px', fontSize: '14px', fontWeight: '600', cursor: 'pointer' }}>
-                      {tab === 'submissions' && '📋 Submissions'}{tab === 'reps' && '👥 Manage Reps'}{tab === 'instructions' && '⚙️ Edit Instructions'}{tab === 'objections' && '💬 Objection Handling'}{tab === 'trends' && '📈 Trends Report'}
+                      {tab === 'submissions' && '📋 Submissions'}{tab === 'reps' && '👥 Manage Reps'}{tab === 'instructions' && '⚙️ Edit Instructions'}{tab === 'objections' && '📚 Coaching Reference Library'}{tab === 'trends' && '📈 Trends Report'}
                     </button>
                   ))}
                 </div>
@@ -842,14 +842,14 @@ export default function NextPlayCoachingApp() {
                   <div>
                     <div style={{ backgroundColor: styles.colors.bgCard, borderRadius: '12px', padding: '24px', border: `1px solid ${styles.colors.border}`, marginBottom: '16px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                        <div><h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: '0 0 4px 0' }}>Objection Handling</h2><p style={{ color: styles.colors.textMuted, fontSize: '13px', margin: 0 }}>Add examples of how to handle common objections. This will be referenced during analysis.</p></div>
-                        {objectionSaved && <span style={{ color: styles.colors.accent, fontSize: '14px', fontWeight: '600' }}>✓ Saved</span>}
+                        <div><h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: '0 0 4px 0' }}>Coaching Reference Library</h2><p style={{ color: styles.colors.textMuted, fontSize: '13px', margin: 0 }}>Reference examples the grader uses during analysis. Use two sections: OBJECTION HANDLES (how to handle pushback) and MUST-PULL DISCOVERY THREADS (parent opens X, rep should dig into Y).</p></div>
+                        {coachingRefSaved && <span style={{ color: styles.colors.accent, fontSize: '14px', fontWeight: '600' }}>✓ Saved</span>}
                       </div>
-                      <textarea value={objectionDoc} onChange={(e) => setObjectionDoc(e.target.value)}
-                        placeholder="Add your objection handling examples here..."
+                      <textarea value={coachingRefDoc} onChange={(e) => setCoachingRefDoc(e.target.value)}
+                        placeholder="## OBJECTION HANDLES&#10;[parent pushes back with X -> the move]&#10;&#10;## MUST-PULL DISCOVERY THREADS&#10;[parent opens X -> rep should dig into Y; flag if skipped]"
                         style={{ width: '100%', minHeight: '400px', padding: '16px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '13px', fontFamily: "'Space Mono', monospace", lineHeight: '1.6', resize: 'vertical', outline: 'none', boxSizing: 'border-box' }} />
                     </div>
-                    <button onClick={() => saveObjectionDoc(objectionDoc)} style={{ padding: '12px 24px', backgroundColor: styles.colors.accent, color: '#000', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: '700', cursor: 'pointer' }}>Save Objection Handling</button>
+                    <button onClick={() => saveCoachingRefDoc(coachingRefDoc)} style={{ padding: '12px 24px', backgroundColor: styles.colors.accent, color: '#000', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: '700', cursor: 'pointer' }}>Save Coaching Reference Library</button>
                   </div>
                 )}
                 
