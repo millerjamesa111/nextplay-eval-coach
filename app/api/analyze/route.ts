@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
     // Create streaming response
     const stream = await anthropic.messages.stream({
       model: 'claude-sonnet-4-5',
-      max_tokens: 2500,
+      max_tokens: 4500,
       system: fullSystemPrompt,
       messages: [{ role: 'user', content: userContent }],
     });
