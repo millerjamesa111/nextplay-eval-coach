@@ -408,6 +408,21 @@ export default function NextPlayCoachingApp() {
   };
   
   const extractAthleteName = (text: string) => {
+    // Prefer the full parent name (first + last) from the form output
+    const firstMatch = text.match(/Parent First Name:\s*([^\n]+)/i);
+    const lastMatch = text.match(/Parent Last Name:\s*([^\n]+)/i);
+    const clean = (s: string | undefined) => {
+      if (!s) return '';
+      const v = s.trim();
+      // ignore blanks/placeholders the model might leave
+      if (!v || /^(n\/?a|none|not (covered|provided|stated|mentioned)|unknown|\[.*\])$/i.test(v)) return '';
+      return v;
+    };
+    const first = clean(firstMatch?.[1]);
+    const last = clean(lastMatch?.[1]);
+    const full = [first, last].filter(Boolean).join(' ');
+    if (full) return full;
+    // Fallbacks: any single-name field, then the header
     const nameMatch = text.match(/Athlete's Name:\s*([^\n]+)/i)
       || text.match(/ATHLETE:\s*([^,\n]+)/i)
       || text.match(/Eval Call\s*[–-]\s*([A-Za-z]+)/i)
