@@ -406,6 +406,54 @@ export default function NextPlayCoachingApp() {
     const gradeMatch = text.match(/\*\*Grade:\s*([A-F][+\-]*)\*\*/i) || text.match(/Grade:\s*([A-F][+\-]*)/i);
     return gradeMatch ? gradeMatch[1] : null;
   };
+
+  // Convert a letter grade to a numeric point value (4.3 scale)
+  const gradeToPoints = (g: string): number | null => {
+    const map: Record<string, number> = {
+      'A+': 4.3, 'A': 4.0, 'A-': 3.7,
+      'B+': 3.3, 'B': 3.0, 'B-': 2.7,
+      'C+': 2.3, 'C': 2.0, 'C-': 1.7,
+      'D+': 1.3, 'D': 1.0, 'D-': 0.7,
+      'F': 0.0,
+    };
+    const key = g.trim().toUpperCase();
+    return key in map ? map[key] : null;
+  };
+
+  // Convert a numeric point value back to the nearest letter grade
+  const pointsToGrade = (p: number): string => {
+    const scale: Array<[number, string]> = [
+      [4.15, 'A+'], [3.85, 'A'], [3.5, 'A-'],
+      [3.15, 'B+'], [2.85, 'B'], [2.5, 'B-'],
+      [2.15, 'C+'], [1.85, 'C'], [1.5, 'C-'],
+      [1.15, 'D+'], [0.85, 'D'], [0.35, 'D-'],
+      [-1, 'F'],
+    ];
+    for (const [threshold, letter] of scale) {
+      if (p >= threshold) return letter;
+    }
+    return 'F';
+  };
+
+  // Compute the overall grade as the average of the dimension-scorecard grades.
+  // Reads grades out of the markdown table rows in section 7. Falls back to the
+  // model's stated overall grade if it can't find enough dimension grades.
+  const computeOverallGrade = (text: string): string | null => {
+    // Isolate the dimension scorecard section so we don't pick up the overall grade line
+    const sectionMatch = text.match(/DIMENSION SCORECARD([\s\S]*?)(?:\n#{1,3}\s|\n###|ONE THING TO LOCK|$)/i);
+    const section = sectionMatch ? sectionMatch[1] : text;
+    // Pull the grade out of each table row: | Dimension | Grade | Note |
+    const rowRegex = /\|[^\n|]+\|\s*([A-F][+\-]?)\s*\|/g;
+    const points: number[] = [];
+    let m;
+    while ((m = rowRegex.exec(section)) !== null) {
+      const pts = gradeToPoints(m[1]);
+      if (pts !== null) points.push(pts);
+    }
+    if (points.length < 3) return null; // not enough dimensions found — fall back
+    const avg = points.reduce((a, b) => a + b, 0) / points.length;
+    return pointsToGrade(avg);
+  };
   
   const extractAthleteName = (text: string) => {
     // Prefer the full parent name (first + last) from the form output
@@ -481,7 +529,7 @@ export default function NextPlayCoachingApp() {
           }
         }
       }
-      const grade = extractGrade(fullOutput);
+      const grade = computeOverallGrade(fullOutput) || extractGrade(fullOutput);
       const typedParent = parentName.trim();
       const athleteName = typedParent || extractAthleteName(fullOutput);
       const interviewDate = extractInterviewDate(transcriptText);
