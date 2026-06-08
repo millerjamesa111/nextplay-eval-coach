@@ -163,17 +163,17 @@ const MarkdownRenderer = ({ content }: { content: string }) => {
       if (line.includes('|') && line.trim().startsWith('|')) { flushList(); if (!inTable) inTable = true; tableRows.push(line); continue; } else if (inTable) { flushTable(); }
       if (line.startsWith('### ')) {
         flushList();
-        if (line.includes('FORM OUTPUT') || line.includes('Form Output')) inFormSection = true;
+        if (line.includes('FORM OUTPUT') || line.includes('Form Output') || line.includes('POST-CALL FORM') || line.includes('Post-Call Form')) inFormSection = true;
+        else inFormSection = false;
         elements.push(<h3 key={`h3-${elements.length}`} style={{ color: '#22c55e', fontSize: '16px', fontWeight: '700', margin: '28px 0 12px 0', borderBottom: '1px solid #374151', paddingBottom: '8px' }}>{line.replace('### ', '').replace(/\*\*/g, '')}</h3>);
         continue;
       }
-      if (line.startsWith('## ')) { flushList(); elements.push(<h2 key={`h2-${elements.length}`} style={{ color: '#f9fafb', fontSize: '20px', fontWeight: '800', margin: '28px 0 16px 0' }}>{line.replace('## ', '').replace(/\*\*/g, '')}</h2>); continue; }
-      if (line.startsWith('# ')) { flushList(); elements.push(<h1 key={`h1-${elements.length}`} style={{ color: '#f9fafb', fontSize: '24px', fontWeight: '800', margin: '32px 0 16px 0' }}>{line.replace('# ', '').replace(/\*\*/g, '')}</h1>); continue; }
+      if (line.startsWith('## ')) { flushList(); inFormSection = false; elements.push(<h2 key={`h2-${elements.length}`} style={{ color: '#f9fafb', fontSize: '20px', fontWeight: '800', margin: '28px 0 16px 0' }}>{line.replace('## ', '').replace(/\*\*/g, '')}</h2>); continue; }
+      if (line.startsWith('# ')) { flushList(); inFormSection = false; elements.push(<h1 key={`h1-${elements.length}`} style={{ color: '#f9fafb', fontSize: '24px', fontWeight: '800', margin: '32px 0 16px 0' }}>{line.replace('# ', '').replace(/\*\*/g, '')}</h1>); continue; }
       if (line.startsWith('> ')) { flushList(); elements.push(<blockquote key={`quote-${elements.length}`} style={{ borderLeft: '3px solid #22c55e', paddingLeft: '16px', margin: '12px 0', color: '#d1d5db', fontStyle: 'italic' }} dangerouslySetInnerHTML={{ __html: processInlineStyles(line.replace('> ', '')) }} />); continue; }
       if (line.match(/^[-*] /)) { inList = true; listItems.push(line.replace(/^[-*] /, '')); continue; } else if (inList && line.trim() === '') { flushList(); continue; } else if (inList) { flushList(); }
       if (line.match(/^---+$/)) { inFormSection = false; elements.push(<hr key={`hr-${elements.length}`} style={{ border: 'none', borderTop: '1px solid #374151', margin: '24px 0' }} />); continue; }
       if (line.trim() === '') continue;
-      if (line.includes('FORM OUTPUT') || line.includes('Form Output')) inFormSection = true;
       if (inFormSection) {
         const colonIndex = line.indexOf(': ');
         if (colonIndex > 0) {
@@ -249,6 +249,8 @@ export default function NextPlayCoachingApp() {
   const [trendsDateRange, setTrendsDateRange] = useState('30');
   const [showTranscript, setShowTranscript] = useState(false);
   const [repCode, setRepCode] = useState('');
+  const [callType, setCallType] = useState('Game Plan');
+  const [parentName, setParentName] = useState('');
   const [reps, setReps] = useState<Record<string, Rep>>({});
   const [showAddRep, setShowAddRep] = useState(false);
   const [newRepName, setNewRepName] = useState('');
@@ -406,13 +408,11 @@ export default function NextPlayCoachingApp() {
   };
   
   const extractAthleteName = (text: string) => {
-    const nameMatch = text.match(/Athlete Interview\s*[–-]\s*(\w+)/i) || text.match(/Athlete's Name:\s*([^\n]+)/i);
+    const nameMatch = text.match(/Athlete's Name:\s*([^\n]+)/i)
+      || text.match(/ATHLETE:\s*([^,\n]+)/i)
+      || text.match(/Eval Call\s*[–-]\s*([A-Za-z]+)/i)
+      || text.match(/Athlete Interview\s*[–-]\s*([A-Za-z]+)/i);
     return nameMatch ? nameMatch[1].trim() : 'Unknown';
-  };
-  
-  const extractAthleteNameFromHeader = (header: string): string => {
-    const match = header.match(/Athlete Interview with (.+?)\s*-/i);
-    return match ? match[1].trim() : 'Unknown';
   };
   
   const extractInterviewDate = (transcript: string) => {
@@ -444,7 +444,7 @@ export default function NextPlayCoachingApp() {
     if (isDuplicate) { setSubmitError('This transcript has already been submitted.'); return; }
     setIsLoading(true); setResult(null); setStreamingOutput('');
     try {
-      const response = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript: transcriptText, repName: rep.rep_name }) });
+      const response = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript: transcriptText, repName: rep.rep_name, callType }) });
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No reader available');
       const decoder = new TextDecoder();
@@ -467,7 +467,8 @@ export default function NextPlayCoachingApp() {
         }
       }
       const grade = extractGrade(fullOutput);
-      const athleteName = extractAthleteNameFromHeader(header) || extractAthleteName(fullOutput);
+      const typedParent = parentName.trim();
+      const athleteName = typedParent || extractAthleteName(fullOutput);
       const interviewDate = extractInterviewDate(transcriptText);
       const submission: LocalSubmission = {
         id: Date.now().toString(), repName: rep.rep_name, repCode: normalizedCode, athleteName, grade,
@@ -576,33 +577,56 @@ export default function NextPlayCoachingApp() {
                   <span style={{ fontSize: '32px' }}>🏈</span>
                   <h1 style={{ fontSize: '28px', fontWeight: '800', color: styles.colors.text, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: '-0.5px', margin: 0 }}>NEXT PLAY</h1>
                 </div>
-                <p style={{ color: styles.colors.accent, fontSize: '14px', fontWeight: '600', letterSpacing: '2px', textTransform: 'uppercase', margin: 0 }}>Athlete Interview Command Center</p>
+                <p style={{ color: styles.colors.accent, fontSize: '14px', fontWeight: '600', letterSpacing: '2px', textTransform: 'uppercase', margin: 0 }}>Eval Specialist Command Center</p>
               </div>
               
               {!result ? (
                 <>
                   <div style={{ backgroundColor: styles.colors.bgCard, borderRadius: '12px', padding: '32px', border: `1px solid ${styles.colors.border}` }}>
-                    <div style={{ marginBottom: '24px' }}>
-                      <label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Rep Code</label>
-                      <input
-                        type="text"
-                        value={repCode}
-                        onChange={(e) => setRepCode(e.target.value)}
-                        placeholder="e.g., will-223"
-                        style={{ width: '200px', padding: '14px 16px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '16px', outline: 'none' }}
-                      />
-                      {repCode.length >= 5 && (
-                        <span style={{ marginLeft: '12px', fontSize: '14px', color: validateRepCode(repCode) ? styles.colors.accent : styles.colors.danger }}>
-                          {validateRepCode(repCode) ? `✓ ${validateRepCode(repCode)!.rep_name}` : '✗ Code not recognized'}
-                        </span>
-                      )}
+                    <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '24px' }}>
+                      <div>
+                        <label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Rep Code</label>
+                        <input
+                          type="text"
+                          value={repCode}
+                          onChange={(e) => setRepCode(e.target.value)}
+                          placeholder="e.g., keegan-001"
+                          style={{ width: '200px', padding: '14px 16px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '16px', outline: 'none' }}
+                        />
+                        {repCode.length >= 5 && (
+                          <div style={{ marginTop: '8px', fontSize: '14px', color: validateRepCode(repCode) ? styles.colors.accent : styles.colors.danger }}>
+                            {validateRepCode(repCode) ? `✓ ${validateRepCode(repCode)!.rep_name}` : '✗ Code not recognized'}
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Call Type</label>
+                        <select
+                          value={callType}
+                          onChange={(e) => setCallType(e.target.value)}
+                          style={{ width: '200px', padding: '14px 16px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '16px', outline: 'none', cursor: 'pointer' }}
+                        >
+                          <option value="Game Plan">Game Plan</option>
+                          <option value="Auto Book">Auto Book</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Parent Name <span style={{ textTransform: 'none', fontWeight: '400' }}>(optional)</span></label>
+                        <input
+                          type="text"
+                          value={parentName}
+                          onChange={(e) => setParentName(e.target.value)}
+                          placeholder="auto-detected if blank"
+                          style={{ width: '220px', padding: '14px 16px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '16px', outline: 'none' }}
+                        />
+                      </div>
                     </div>
                     <div style={{ marginBottom: '24px' }}>
                       <label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Paste Transcript</label>
-                      <textarea id="transcript-input" placeholder="Athlete Interview with Mike Strong - 2026/04/08 18:51 CDT - Transcript..."
+                      <textarea id="transcript-input" placeholder="Paste the call transcript here..."
                         style={{ width: '100%', minHeight: '300px', padding: '16px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '14px', fontFamily: "'Space Mono', monospace", lineHeight: '1.6', resize: 'vertical', outline: 'none', boxSizing: 'border-box' }}
                       />
-                      <p style={{ fontSize: '12px', color: styles.colors.textMuted, marginTop: '8px' }}>Athlete name and date will be extracted from the first line.</p>
+                      <p style={{ fontSize: '12px', color: styles.colors.textMuted, marginTop: '8px' }}>Select the call type above. If you leave Parent Name blank, the name is pulled from the call.</p>
                     </div>
                     <button onClick={handleSubmit} disabled={isLoading}
                       style={{ width: '100%', padding: '16px', backgroundColor: isLoading ? styles.colors.border : styles.colors.accent, color: isLoading ? styles.colors.textMuted : '#000', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: '700', cursor: isLoading ? 'not-allowed' : 'pointer' }}>
@@ -638,7 +662,7 @@ export default function NextPlayCoachingApp() {
                       {showTranscript ? <pre style={{ whiteSpace: 'pre-wrap', fontFamily: "'Space Mono', monospace", fontSize: '13px', lineHeight: '1.6', color: styles.colors.textMuted, margin: 0 }}>{result.transcript}</pre> : <MarkdownRenderer content={result.output} />}
                     </div>
                   </div>
-                  <button onClick={() => { setResult(null); setRepCode(''); setShowTranscript(false); const input = document.getElementById('transcript-input') as HTMLTextAreaElement; if (input) input.value = ''; }}
+                  <button onClick={() => { setResult(null); setRepCode(''); setParentName(''); setShowTranscript(false); const input = document.getElementById('transcript-input') as HTMLTextAreaElement; if (input) input.value = ''; }}
                     style={{ marginTop: '24px', padding: '12px 24px', backgroundColor: 'transparent', border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '14px', fontWeight: '600', cursor: 'pointer' }}>
                     ← Submit Another Transcript
                   </button>
@@ -656,7 +680,7 @@ export default function NextPlayCoachingApp() {
               {!isViewLoggedIn ? (
                 <div style={{ backgroundColor: styles.colors.bgCard, borderRadius: '12px', padding: '32px', border: `1px solid ${styles.colors.border}`, maxWidth: '400px' }}>
                   <label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Enter Your Rep Code</label>
-                  <input type="text" value={viewRepCode} onChange={(e) => setViewRepCode(e.target.value)} placeholder="e.g., will-223"
+                  <input type="text" value={viewRepCode} onChange={(e) => setViewRepCode(e.target.value)} placeholder="e.g., keegan-001"
                     style={{ width: '100%', padding: '14px 16px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '16px', outline: 'none', marginBottom: '16px', boxSizing: 'border-box' }} />
                   <button onClick={() => { if (validateRepCode(viewRepCode)) setIsViewLoggedIn(true); else alert('Rep code not recognized.'); }}
                     style={{ width: '100%', padding: '14px', backgroundColor: styles.colors.accent, color: '#000', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: '700', cursor: 'pointer' }}>View Submissions</button>
@@ -746,8 +770,8 @@ export default function NextPlayCoachingApp() {
                     {showAddRep && (
                       <div style={{ backgroundColor: styles.colors.bgCard, borderRadius: '12px', padding: '20px', border: `1px solid ${styles.colors.border}`, marginBottom: '16px' }}>
                         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                          <div><label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', marginBottom: '6px' }}>Rep Name</label><input type="text" value={newRepName} onChange={(e) => setNewRepName(e.target.value)} placeholder="Will Daffron" style={{ padding: '10px 14px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '6px', color: styles.colors.text, width: '180px' }} /></div>
-                          <div><label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', marginBottom: '6px' }}>Code</label><input type="text" value={newRepCode} onChange={(e) => setNewRepCode(e.target.value)} placeholder="will-223" style={{ padding: '10px 14px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '6px', color: styles.colors.text, width: '140px', fontFamily: 'monospace' }} /></div>
+                          <div><label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', marginBottom: '6px' }}>Rep Name</label><input type="text" value={newRepName} onChange={(e) => setNewRepName(e.target.value)} placeholder="Keegan Jones" style={{ padding: '10px 14px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '6px', color: styles.colors.text, width: '180px' }} /></div>
+                          <div><label style={{ display: 'block', color: styles.colors.textMuted, fontSize: '12px', marginBottom: '6px' }}>Code</label><input type="text" value={newRepCode} onChange={(e) => setNewRepCode(e.target.value)} placeholder="keegan-001" style={{ padding: '10px 14px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '6px', color: styles.colors.text, width: '140px', fontFamily: 'monospace' }} /></div>
                           <button onClick={handleAddRep} style={{ padding: '10px 16px', backgroundColor: styles.colors.accent, color: '#000', border: 'none', borderRadius: '6px', fontWeight: '600', cursor: 'pointer' }}>Save</button>
                           <button onClick={() => { setShowAddRep(false); setNewRepName(''); setNewRepCode(''); }} style={{ padding: '10px 16px', backgroundColor: 'transparent', border: `1px solid ${styles.colors.border}`, borderRadius: '6px', color: styles.colors.textMuted, cursor: 'pointer' }}>Cancel</button>
                         </div>
@@ -785,7 +809,7 @@ export default function NextPlayCoachingApp() {
                   <div>
                     <div style={{ backgroundColor: styles.colors.bgCard, borderRadius: '12px', padding: '24px', border: `1px solid ${styles.colors.border}`, marginBottom: '16px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                        <div><h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: '0 0 4px 0' }}>System Instructions</h2><p style={{ color: styles.colors.textMuted, fontSize: '13px', margin: 0 }}>Customize how Claude analyzes transcripts and grades interviews.</p></div>
+                        <div><h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: '0 0 4px 0' }}>System Instructions</h2><p style={{ color: styles.colors.textMuted, fontSize: '13px', margin: 0 }}>Customize how Claude analyzes transcripts and grades calls.</p></div>
                         {promptSaved && <span style={{ color: styles.colors.accent, fontSize: '14px', fontWeight: '600' }}>✓ Saved</span>}
                       </div>
                       <textarea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)}
