@@ -669,8 +669,9 @@ export default function NextPlayCoachingApp() {
                           onChange={(e) => setCallType(e.target.value)}
                           style={{ width: '200px', padding: '14px 16px', backgroundColor: styles.colors.bg, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '16px', outline: 'none', cursor: 'pointer' }}
                         >
-                          <option value="Game Plan">Game Plan</option>
+                         <option value="Game Plan">Game Plan</option>
                           <option value="Auto Book">Auto Book</option>
+                          <option value="Dialer">Dialer</option>
                         </select>
                       </div>
                       <div>
