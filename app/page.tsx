@@ -373,7 +373,7 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       if (line.includes('|') && line.trim().startsWith('|')) { flushList(); if (!inTable) inTable = true; tableRows.push(line); continue; } else if (inTable) { flushTable(); }
       if (line.startsWith('### ')) {
         flushList();
-        if (line.includes('FORM OUTPUT') || line.includes('Form Output') || line.includes('POST-CALL FORM') || line.includes('Post-Call Form')) inFormSection = true;
+        if (/copy\/paste|copy-paste|FORM OUTPUT|Form Output|POST-CALL NOTE|Post-Call Note|POST-CALL FORM|Post-Call Form/i.test(line)) inFormSection = true;
         else inFormSection = false;
         elements.push(<h3 key={`h3-${elements.length}`} style={{ color: '#22c55e', fontSize: '16px', fontWeight: '700', margin: '28px 0 12px 0', borderBottom: '1px solid #374151', paddingBottom: '8px' }}>{line.replace('### ', '').replace(/\*\*/g, '')}</h3>);
         continue;
