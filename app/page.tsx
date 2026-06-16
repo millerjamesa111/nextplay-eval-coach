@@ -119,6 +119,44 @@ const locateQuoteInTranscript = (transcript: string, quoteLine: string): number 
   return -1;
 };
 
+// Find which LINE (index into transcript.split('\n')) best contains the phrase.
+// Used to flash only the matched line rather than the whole panel.
+const findBestLineIndex = (lines: string[], phrase: string): number => {
+  const needle = normalizeWords(phrase);
+  if (needle.length === 0) return -1;
+  const windowLen = Math.min(needle.length, 12);
+  const target = needle.slice(0, windowLen);
+  let bestScore = 0;
+  let bestLine = -1;
+  for (let li = 0; li < lines.length; li++) {
+    const hay = normalizeWords(lines[li]);
+    if (hay.length === 0) continue;
+    let lineBest = 0;
+    for (let i = 0; i < hay.length; i++) {
+      let score = 0;
+      for (let j = 0; j < target.length && i + j < hay.length; j++) {
+        if (hay[i + j] === target[j]) score++;
+      }
+      if (score > lineBest) lineBest = score;
+    }
+    if (lineBest > bestScore) { bestScore = lineBest; bestLine = li; }
+  }
+  const threshold = Math.max(3, Math.ceil(target.length * 0.6));
+  return bestScore >= threshold ? bestLine : -1;
+};
+
+// Spliced-aware line locator.
+const locateQuoteLineIndex = (lines: string[], quoteLine: string): number => {
+  const quote = extractQuoteText(quoteLine);
+  const pieces = quote.split(/\.{2,}|…/).map(p => p.trim()).filter(p => p.length > 0);
+  const tries = pieces.length > 0 ? pieces : [quote];
+  for (const piece of tries) {
+    const li = findBestLineIndex(lines, piece);
+    if (li >= 0) return li;
+  }
+  return -1;
+};
+
 // Detect whether a rendered report line is a speaker-labeled quote we can link.
 // e.g.  Mom: "..."   Rep: "..."   Aiden: "..."
 const isSpeakerQuoteLine = (line: string): boolean => {
@@ -344,9 +382,38 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
   return <div style={{ fontFamily: "'Inter', -apple-system, sans-serif" }}>{renderMarkdown(content)}</div>;
 };
 
-// ============================================
-// TYPES
-// ============================================
+// Renders a transcript as individual lines so a single matched line can be
+// flashed (instead of tinting the whole panel). The matched line is passed in
+// via flashLineIndex; flashKind controls the color.
+const TranscriptPanel = React.forwardRef<HTMLDivElement, { transcript: string; flashLineIndex: number | null; flashKind: 'found' | 'notfound' }>(
+  ({ transcript, flashLineIndex, flashKind }, ref) => {
+    const lines = (transcript || '').split('\n');
+    const flashColor = flashKind === 'notfound' ? 'rgba(245, 158, 11, 0.22)' : 'rgba(34, 197, 94, 0.22)';
+    return (
+      <div
+        ref={ref}
+        style={{ maxHeight: '500px', overflow: 'auto', fontFamily: "'Space Mono', monospace", fontSize: '13px', lineHeight: '1.6', color: styles.colors.textMuted }}
+      >
+        {lines.map((ln, i) => (
+          <div
+            key={i}
+            data-tline={i}
+            style={{
+              whiteSpace: 'pre-wrap',
+              padding: '1px 6px',
+              borderRadius: '4px',
+              transition: 'background-color 0.25s ease',
+              backgroundColor: flashLineIndex === i ? flashColor : 'transparent',
+            }}
+          >
+            {ln === '' ? '\u00A0' : ln}
+          </div>
+        ))}
+      </div>
+    );
+  }
+);
+TranscriptPanel.displayName = 'TranscriptPanel';
 
 interface LocalSubmission {
   id: string;
@@ -410,66 +477,58 @@ export default function NextPlayCoachingApp() {
   const [adminPw, setAdminPw] = useState('');
 
   // Transcript jump-to wiring
-  const transcriptRef = useRef<HTMLPreElement | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
   const pendingJumpRef = useRef<string | null>(null);
+  const [flashLineIndex, setFlashLineIndex] = useState<number | null>(null);
+  const [flashKind, setFlashKind] = useState<'found' | 'notfound'>('found');
 
   const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'nextplay';
 
   useEffect(() => { loadSubmissions(); loadSettings(); loadReps(); }, []);
 
   // When a "Go to transcript" tag is clicked, we switch to the transcript tab.
-  // Once the <pre> is mounted, this effect scrolls to the matched spot and flashes it.
+  // Once the panel is mounted, this effect finds the matched line, scrolls to
+  // it, and flashes ONLY that line (not the whole panel).
   useEffect(() => {
     if (!showTranscript) return;
     const phrase = pendingJumpRef.current;
     if (!phrase) return;
-    const el = transcriptRef.current;
-    if (!el) return;
+    const container = transcriptRef.current;
+    if (!container) return;
 
-    const fullText = el.textContent || '';
-    const offset = locateQuoteInTranscript(fullText, phrase);
+    const activeTranscript =
+      (selectedSubmission && (view !== 'rep')) ? selectedSubmission.transcript
+      : (result && !('error' in result)) ? (result as LocalSubmission).transcript
+      : (selectedSubmission ? selectedSubmission.transcript : '');
+
+    const lines = (activeTranscript || '').split('\n');
+    const lineIdx = locateQuoteLineIndex(lines, phrase);
     pendingJumpRef.current = null;
 
-    // Defer to next frame so layout is settled before measuring.
     requestAnimationFrame(() => {
-      try {
-        if (offset < 0) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          flashElement(el, true);
-          return;
+      if (lineIdx < 0) {
+        // Couldn't pinpoint — go to top and flash the first line amber.
+        container.scrollTo({ top: 0, behavior: 'smooth' });
+        setFlashKind('notfound');
+        setFlashLineIndex(0);
+      } else {
+        const lineEl = container.querySelector(`[data-tline="${lineIdx}"]`) as HTMLElement | null;
+        if (lineEl) {
+          lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
-        const textNode = el.firstChild;
-        if (!textNode) return;
-        const range = document.createRange();
-        const safeEnd = Math.min(offset + 1, (textNode.textContent || '').length);
-        range.setStart(textNode, offset);
-        range.setEnd(textNode, safeEnd);
-        const rect = range.getBoundingClientRect();
-        const containerRect = el.getBoundingClientRect();
-        // Scroll the panel so the match sits near the top, with a little breathing room.
-        el.scrollTop = el.scrollTop + (rect.top - containerRect.top) - 24;
-        flashElement(el, false);
-      } catch {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setFlashKind('found');
+        setFlashLineIndex(lineIdx);
       }
+      // Clear the flash after it fades so it can re-trigger next click.
+      setTimeout(() => setFlashLineIndex(null), 1100);
     });
   }, [showTranscript]);
-
-  // Briefly flash the transcript panel background so the eye lands on the area.
-  const flashElement = (el: HTMLElement, notFound: boolean) => {
-    const color = notFound ? 'rgba(245, 158, 11, 0.18)' : 'rgba(34, 197, 94, 0.18)';
-    const prev = el.style.backgroundColor;
-    el.style.transition = 'background-color 0.2s ease';
-    el.style.backgroundColor = color;
-    setTimeout(() => { el.style.backgroundColor = prev; }, 900);
-  };
 
   // Called by the report's quote tags. Switches to the transcript tab and
   // stashes the phrase for the effect above to scroll to.
   const handleJumpToTranscript = (line: string) => {
     pendingJumpRef.current = line;
     if (showTranscript) {
-      // Already on the transcript tab — re-trigger by toggling the effect dependency.
       setShowTranscript(false);
       requestAnimationFrame(() => setShowTranscript(true));
     } else {
@@ -934,8 +993,8 @@ export default function NextPlayCoachingApp() {
                       <button onClick={() => setShowTranscript(false)} style={{ flex: 1, padding: '14px', backgroundColor: !showTranscript ? styles.colors.bgHover : 'transparent', border: 'none', color: !showTranscript ? styles.colors.text : styles.colors.textMuted, fontWeight: '600', cursor: 'pointer' }}>Results</button>
                       <button onClick={() => setShowTranscript(true)} style={{ flex: 1, padding: '14px', backgroundColor: showTranscript ? styles.colors.bgHover : 'transparent', border: 'none', color: showTranscript ? styles.colors.text : styles.colors.textMuted, fontWeight: '600', cursor: 'pointer' }}>Transcript</button>
                     </div>
-                    <div style={{ padding: '24px', maxHeight: showTranscript ? '500px' : 'none', overflow: showTranscript ? 'auto' : 'visible' }}>
-                      {showTranscript ? <pre ref={transcriptRef} style={{ whiteSpace: 'pre-wrap', fontFamily: "'Space Mono', monospace", fontSize: '13px', lineHeight: '1.6', color: styles.colors.textMuted, margin: 0 }}>{result.transcript}</pre> : <MarkdownRenderer content={result.output} transcript={result.transcript} onJump={handleJumpToTranscript} />}
+                    <div style={{ padding: '24px' }}>
+                      {showTranscript ? <TranscriptPanel ref={transcriptRef} transcript={result.transcript} flashLineIndex={flashLineIndex} flashKind={flashKind} /> : <MarkdownRenderer content={result.output} transcript={result.transcript} onJump={handleJumpToTranscript} />}
                     </div>
                   </div>
                   <button onClick={() => { setResult(null); setRepCode(''); setParentName(''); setShowTranscript(false); const input = document.getElementById('transcript-input') as HTMLTextAreaElement; if (input) input.value = ''; }}
@@ -980,8 +1039,8 @@ export default function NextPlayCoachingApp() {
                           <button onClick={() => setShowTranscript(false)} style={{ flex: 1, padding: '12px', backgroundColor: !showTranscript ? styles.colors.bgHover : 'transparent', border: 'none', color: !showTranscript ? styles.colors.text : styles.colors.textMuted, fontWeight: '600', cursor: 'pointer' }}>Results</button>
                           <button onClick={() => setShowTranscript(true)} style={{ flex: 1, padding: '12px', backgroundColor: showTranscript ? styles.colors.bgHover : 'transparent', border: 'none', color: showTranscript ? styles.colors.text : styles.colors.textMuted, fontWeight: '600', cursor: 'pointer' }}>Transcript</button>
                         </div>
-                        <div style={{ padding: '24px', maxHeight: '500px', overflow: 'auto' }}>
-                          {showTranscript ? <pre ref={transcriptRef} style={{ whiteSpace: 'pre-wrap', fontFamily: "'Space Mono', monospace", fontSize: '13px', lineHeight: '1.6', color: styles.colors.textMuted, margin: 0 }}>{selectedSubmission.transcript}</pre> : <MarkdownRenderer content={selectedSubmission.output} transcript={selectedSubmission.transcript} onJump={handleJumpToTranscript} />}
+                        <div style={{ padding: '24px' }}>
+                          {showTranscript ? <TranscriptPanel ref={transcriptRef} transcript={selectedSubmission.transcript} flashLineIndex={flashLineIndex} flashKind={flashKind} /> : <MarkdownRenderer content={selectedSubmission.output} transcript={selectedSubmission.transcript} onJump={handleJumpToTranscript} />}
                         </div>
                       </div>
                     </div>
@@ -1171,8 +1230,8 @@ export default function NextPlayCoachingApp() {
                             <button onClick={() => setShowTranscript(false)} style={{ flex: 1, padding: '12px', backgroundColor: !showTranscript ? styles.colors.bgHover : 'transparent', border: 'none', color: !showTranscript ? styles.colors.text : styles.colors.textMuted, fontWeight: '600', cursor: 'pointer' }}>Results</button>
                             <button onClick={() => setShowTranscript(true)} style={{ flex: 1, padding: '12px', backgroundColor: showTranscript ? styles.colors.bgHover : 'transparent', border: 'none', color: showTranscript ? styles.colors.text : styles.colors.textMuted, fontWeight: '600', cursor: 'pointer' }}>Transcript</button>
                           </div>
-                          <div style={{ padding: '24px', maxHeight: '500px', overflow: 'auto' }}>
-                            {showTranscript ? <pre ref={transcriptRef} style={{ whiteSpace: 'pre-wrap', fontFamily: "'Space Mono', monospace", fontSize: '13px', lineHeight: '1.6', color: styles.colors.textMuted, margin: 0 }}>{selectedSubmission.transcript}</pre> : <MarkdownRenderer content={selectedSubmission.output} transcript={selectedSubmission.transcript} onJump={handleJumpToTranscript} />}
+                          <div style={{ padding: '24px' }}>
+                            {showTranscript ? <TranscriptPanel ref={transcriptRef} transcript={selectedSubmission.transcript} flashLineIndex={flashLineIndex} flashKind={flashKind} /> : <MarkdownRenderer content={selectedSubmission.output} transcript={selectedSubmission.transcript} onJump={handleJumpToTranscript} />}
                           </div>
                         </div>
                       </div>
