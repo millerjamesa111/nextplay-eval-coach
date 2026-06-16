@@ -45,9 +45,12 @@ const normalizeWords = (text: string): string[] => {
     .filter(w => w.length > 0 && !FILLER_WORDS.has(w));
 };
 
-// Strip a leading speaker label like "Mom:" / "Rep:" / "Aiden Jordan:" off a quote.
+// Strip a leading speaker label off a quote: "Mom:", "Rep:", "Aiden Jordan:",
+// or the bracketed forms "[Mom]:" / "[Rep]:" that some reports use.
 const stripSpeakerLabel = (text: string): string => {
-  return text.replace(/^\s*[A-Z][A-Za-z.'\-]*(?:\s+[A-Z][A-Za-z.'\-]*){0,3}\s*:\s*/, '');
+  return text
+    .replace(/^\s*\[[A-Za-z][A-Za-z .'\-]*\]\s*:\s*/, '')
+    .replace(/^\s*[A-Z][A-Za-z.'\-]*(?:\s+[A-Z][A-Za-z.'\-]*){0,3}\s*:\s*/, '');
 };
 
 // Pull the quoted content out of a line if it contains quotation marks.
@@ -107,60 +110,63 @@ const findPhraseOffset = (transcript: string, phrase: string): number => {
   return -1;
 };
 
-// A quote may be spliced with "..." — try each piece, return the first hit.
-const locateQuoteInTranscript = (transcript: string, quoteLine: string): number => {
+// From a character offset, compute a sentence-sized [start, end] span around it.
+// Works whether the transcript has line breaks or is one big paragraph (the
+// common WAVV summary export), so we can highlight just the matched sentence.
+const spanAround = (text: string, offset: number, approxLen = 200): [number, number] | null => {
+  if (offset < 0) return null;
+  let start = offset;
+  let back = 0;
+  while (start > 0 && back < 80) {
+    const ch = text[start - 1];
+    if (ch === '.' || ch === '?' || ch === '!' || ch === '\n') break;
+    start--; back++;
+  }
+  while (start < text.length && /\s/.test(text[start])) start++;
+  let end = offset;
+  while (end < text.length && (end - start) < approxLen) {
+    const ch = text[end];
+    end++;
+    if (ch === '.' || ch === '?' || ch === '!' || ch === '\n') break;
+  }
+  return [start, end];
+};
+
+// Spliced-aware: returns the sentence span around the first matching piece.
+const locateQuoteSpan = (transcript: string, quoteLine: string): [number, number] | null => {
   const quote = extractQuoteText(quoteLine);
   const pieces = quote.split(/\.{2,}|…/).map(p => p.trim()).filter(p => p.length > 0);
   const tries = pieces.length > 0 ? pieces : [quote];
   for (const piece of tries) {
-    const offset = findPhraseOffset(transcript, piece);
-    if (offset >= 0) return offset;
+    const off = findPhraseOffset(transcript, piece);
+    if (off >= 0) return spanAround(transcript, off);
   }
-  return -1;
+  return null;
 };
 
-// Find which LINE (index into transcript.split('\n')) best contains the phrase.
-// Used to flash only the matched line rather than the whole panel.
-const findBestLineIndex = (lines: string[], phrase: string): number => {
-  const needle = normalizeWords(phrase);
-  if (needle.length === 0) return -1;
-  const windowLen = Math.min(needle.length, 12);
-  const target = needle.slice(0, windowLen);
-  let bestScore = 0;
-  let bestLine = -1;
-  for (let li = 0; li < lines.length; li++) {
-    const hay = normalizeWords(lines[li]);
-    if (hay.length === 0) continue;
-    let lineBest = 0;
-    for (let i = 0; i < hay.length; i++) {
-      let score = 0;
-      for (let j = 0; j < target.length && i + j < hay.length; j++) {
-        if (hay[i + j] === target[j]) score++;
-      }
-      if (score > lineBest) lineBest = score;
+// Extract every quoted substring from a line (a line may hold more than one).
+const extractAllQuotes = (line: string): string[] => {
+  const out: string[] = [];
+  const re = /[“"]([^“”"]{4,})[”"]/g;
+  let m;
+  while ((m = re.exec(line)) !== null) out.push(m[1]);
+  return out;
+};
+
+// Speaker-agnostic: does this report line contain a quotation that actually
+// matches the transcript? We don't care who is speaking (Mom, Dad, athlete,
+// coach, or no label at all) — only whether the quoted words are in the call.
+// Spliced quotes ("a... b") match if any piece is found.
+const lineHasMatchingQuote = (transcript: string, line: string): boolean => {
+  if (!transcript) return false;
+  for (const q of extractAllQuotes(line)) {
+    const pieces = q.split(/\.{2,}|…/).map(p => p.trim()).filter(p => p.length > 0);
+    const tries = pieces.length > 0 ? pieces : [q];
+    for (const p of tries) {
+      if (findPhraseOffset(transcript, p) >= 0) return true;
     }
-    if (lineBest > bestScore) { bestScore = lineBest; bestLine = li; }
   }
-  const threshold = Math.max(3, Math.ceil(target.length * 0.6));
-  return bestScore >= threshold ? bestLine : -1;
-};
-
-// Spliced-aware line locator.
-const locateQuoteLineIndex = (lines: string[], quoteLine: string): number => {
-  const quote = extractQuoteText(quoteLine);
-  const pieces = quote.split(/\.{2,}|…/).map(p => p.trim()).filter(p => p.length > 0);
-  const tries = pieces.length > 0 ? pieces : [quote];
-  for (const piece of tries) {
-    const li = findBestLineIndex(lines, piece);
-    if (li >= 0) return li;
-  }
-  return -1;
-};
-
-// Detect whether a rendered report line is a speaker-labeled quote we can link.
-// e.g.  Mom: "..."   Rep: "..."   Aiden: "..."
-const isSpeakerQuoteLine = (line: string): boolean => {
-  return /^\s*[A-Z][A-Za-z.'\-]*(?:\s+[A-Z][A-Za-z.'\-]*){0,3}\s*:\s*[“"']/.test(line);
+  return false;
 };
 
 // ============================================
@@ -231,22 +237,21 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
     let inFormSection = false;
     const seenQuestions = new Set<string>();
     
-    // Render a "Go to transcript" tag next to a quote line, if we can wire it.
+    // Render a "Go to transcript" tag next to a line. Only called for lines
+    // that already contain a transcript-matching quote, so the tag is always live.
     const quoteTag = (line: string, key: string) => {
       if (!transcript || !onJump) return null;
-      const found = locateQuoteInTranscript(transcript, line) >= 0;
       return (
         <button
           key={`jump-${key}`}
           onClick={() => onJump(line)}
-          title={found ? 'Jump to this spot in the transcript' : "Couldn't pinpoint this exact line — opens the transcript"}
+          title="Jump to this spot in the transcript"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: '4px',
             marginLeft: '8px', padding: '1px 8px', verticalAlign: 'middle',
             backgroundColor: 'transparent', border: `1px solid ${styles.colors.accentDim}`,
             borderRadius: '999px', color: styles.colors.accent, fontSize: '11px',
             fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
-            opacity: found ? 1 : 0.55,
             fontFamily: "'Inter', -apple-system, sans-serif",
           }}
         >
@@ -337,7 +342,7 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       if (line.startsWith('> ')) {
         flushList();
         const inner = line.replace('> ', '');
-        const tag = isSpeakerQuoteLine(inner) ? quoteTag(inner, `q-${elements.length}`) : null;
+        const tag = (transcript && lineHasMatchingQuote(transcript, inner)) ? quoteTag(inner, `q-${elements.length}`) : null;
         elements.push(
           <blockquote key={`quote-${elements.length}`} style={{ borderLeft: '3px solid #22c55e', paddingLeft: '16px', margin: '12px 0', color: '#d1d5db', fontStyle: 'italic' }}>
             <span dangerouslySetInnerHTML={{ __html: processInlineStyles(inner) }} />
@@ -363,8 +368,9 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
         }
         continue;
       }
-      // Plain paragraph — if it's a speaker-labeled quote, append a jump tag.
-      if (isSpeakerQuoteLine(line)) {
+      // Plain paragraph — if it contains a quote that matches the transcript,
+      // append a jump tag (speaker label, if any, doesn't matter).
+      if (transcript && lineHasMatchingQuote(transcript, line)) {
         const tag = quoteTag(line, `p-${elements.length}`);
         elements.push(
           <p key={`p-${elements.length}`} style={{ margin: '12px 0', lineHeight: '1.7', color: '#f9fafb', fontSize: '15px' }}>
@@ -382,33 +388,45 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
   return <div style={{ fontFamily: "'Inter', -apple-system, sans-serif" }}>{renderMarkdown(content)}</div>;
 };
 
-// Renders a transcript as individual lines so a single matched line can be
-// flashed (instead of tinting the whole panel). The matched line is passed in
-// via flashLineIndex; flashKind controls the color.
-const TranscriptPanel = React.forwardRef<HTMLDivElement, { transcript: string; flashLineIndex: number | null; flashKind: 'found' | 'notfound' }>(
-  ({ transcript, flashLineIndex, flashKind }, ref) => {
-    const lines = (transcript || '').split('\n');
-    const flashColor = flashKind === 'notfound' ? 'rgba(245, 158, 11, 0.22)' : 'rgba(34, 197, 94, 0.22)';
+// Renders a transcript and, when a jump is active, highlights just the matched
+// sentence span (not the whole thing). Works whether the transcript has line
+// breaks or is one continuous paragraph (the common WAVV export).
+const TranscriptPanel = React.forwardRef<HTMLDivElement, { transcript: string; highlightSpan: [number, number] | null; highlightKind: 'found' | 'notfound' }>(
+  ({ transcript, highlightSpan, highlightKind }, ref) => {
+    const text = transcript || '';
+    const flashColor = highlightKind === 'notfound' ? 'rgba(245, 158, 11, 0.28)' : 'rgba(34, 197, 94, 0.28)';
+
+    let content: React.ReactNode;
+    if (highlightSpan) {
+      const [s, e] = highlightSpan;
+      content = (
+        <>
+          {text.slice(0, s)}
+          <mark
+            data-tmark="1"
+            style={{
+              backgroundColor: flashColor,
+              color: 'inherit',
+              borderRadius: '3px',
+              padding: '1px 2px',
+              boxShadow: `0 0 0 2px ${flashColor}`,
+            }}
+          >
+            {text.slice(s, e)}
+          </mark>
+          {text.slice(e)}
+        </>
+      );
+    } else {
+      content = text;
+    }
+
     return (
       <div
         ref={ref}
-        style={{ maxHeight: '500px', overflow: 'auto', fontFamily: "'Space Mono', monospace", fontSize: '13px', lineHeight: '1.6', color: styles.colors.textMuted }}
+        style={{ maxHeight: '500px', overflow: 'auto', whiteSpace: 'pre-wrap', fontFamily: "'Space Mono', monospace", fontSize: '13px', lineHeight: '1.7', color: styles.colors.textMuted }}
       >
-        {lines.map((ln, i) => (
-          <div
-            key={i}
-            data-tline={i}
-            style={{
-              whiteSpace: 'pre-wrap',
-              padding: '1px 6px',
-              borderRadius: '4px',
-              transition: 'background-color 0.25s ease',
-              backgroundColor: flashLineIndex === i ? flashColor : 'transparent',
-            }}
-          >
-            {ln === '' ? '\u00A0' : ln}
-          </div>
-        ))}
+        {content}
       </div>
     );
   }
@@ -479,16 +497,16 @@ export default function NextPlayCoachingApp() {
   // Transcript jump-to wiring
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const pendingJumpRef = useRef<string | null>(null);
-  const [flashLineIndex, setFlashLineIndex] = useState<number | null>(null);
-  const [flashKind, setFlashKind] = useState<'found' | 'notfound'>('found');
+  const [highlightSpan, setHighlightSpan] = useState<[number, number] | null>(null);
+  const [highlightKind, setHighlightKind] = useState<'found' | 'notfound'>('found');
 
   const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'nextplay';
 
   useEffect(() => { loadSubmissions(); loadSettings(); loadReps(); }, []);
 
-  // When a "Go to transcript" tag is clicked, we switch to the transcript tab.
-  // Once the panel is mounted, this effect finds the matched line, scrolls to
-  // it, and flashes ONLY that line (not the whole panel).
+  // When a "Go to transcript" tag is clicked, switch to the transcript tab,
+  // then once the panel is mounted find the matched sentence span, scroll it
+  // into view, and highlight only that span. Clears after a moment.
   useEffect(() => {
     if (!showTranscript) return;
     const phrase = pendingJumpRef.current;
@@ -497,31 +515,35 @@ export default function NextPlayCoachingApp() {
     if (!container) return;
 
     const activeTranscript =
-      (selectedSubmission && (view !== 'rep')) ? selectedSubmission.transcript
-      : (result && !('error' in result)) ? (result as LocalSubmission).transcript
+      (result && !('error' in result)) && view === 'rep' ? (result as LocalSubmission).transcript
       : (selectedSubmission ? selectedSubmission.transcript : '');
 
-    const lines = (activeTranscript || '').split('\n');
-    const lineIdx = locateQuoteLineIndex(lines, phrase);
+    const span = locateQuoteSpan(activeTranscript || '', phrase);
     pendingJumpRef.current = null;
 
+    if (span) {
+      setHighlightKind('found');
+      setHighlightSpan(span);
+    } else {
+      setHighlightKind('notfound');
+      setHighlightSpan([0, 0]);
+    }
+
+    // After the highlight renders, scroll the marked span into view.
     requestAnimationFrame(() => {
-      if (lineIdx < 0) {
-        // Couldn't pinpoint — go to top and flash the first line amber.
-        container.scrollTo({ top: 0, behavior: 'smooth' });
-        setFlashKind('notfound');
-        setFlashLineIndex(0);
-      } else {
-        const lineEl = container.querySelector(`[data-tline="${lineIdx}"]`) as HTMLElement | null;
-        if (lineEl) {
-          lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      requestAnimationFrame(() => {
+        const mark = container.querySelector('[data-tmark="1"]') as HTMLElement | null;
+        if (mark) {
+          mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+          container.scrollTo({ top: 0, behavior: 'smooth' });
         }
-        setFlashKind('found');
-        setFlashLineIndex(lineIdx);
-      }
-      // Clear the flash after it fades so it can re-trigger next click.
-      setTimeout(() => setFlashLineIndex(null), 1100);
+      });
     });
+
+    // Clear the highlight after it has had time to be seen.
+    const t = setTimeout(() => setHighlightSpan(null), 2600);
+    return () => clearTimeout(t);
   }, [showTranscript]);
 
   // Called by the report's quote tags. Switches to the transcript tab and
@@ -994,7 +1016,7 @@ export default function NextPlayCoachingApp() {
                       <button onClick={() => setShowTranscript(true)} style={{ flex: 1, padding: '14px', backgroundColor: showTranscript ? styles.colors.bgHover : 'transparent', border: 'none', color: showTranscript ? styles.colors.text : styles.colors.textMuted, fontWeight: '600', cursor: 'pointer' }}>Transcript</button>
                     </div>
                     <div style={{ padding: '24px' }}>
-                      {showTranscript ? <TranscriptPanel ref={transcriptRef} transcript={result.transcript} flashLineIndex={flashLineIndex} flashKind={flashKind} /> : <MarkdownRenderer content={result.output} transcript={result.transcript} onJump={handleJumpToTranscript} />}
+                      {showTranscript ? <TranscriptPanel ref={transcriptRef} transcript={result.transcript} highlightSpan={highlightSpan} highlightKind={highlightKind} /> : <MarkdownRenderer content={result.output} transcript={result.transcript} onJump={handleJumpToTranscript} />}
                     </div>
                   </div>
                   <button onClick={() => { setResult(null); setRepCode(''); setParentName(''); setShowTranscript(false); const input = document.getElementById('transcript-input') as HTMLTextAreaElement; if (input) input.value = ''; }}
@@ -1040,7 +1062,7 @@ export default function NextPlayCoachingApp() {
                           <button onClick={() => setShowTranscript(true)} style={{ flex: 1, padding: '12px', backgroundColor: showTranscript ? styles.colors.bgHover : 'transparent', border: 'none', color: showTranscript ? styles.colors.text : styles.colors.textMuted, fontWeight: '600', cursor: 'pointer' }}>Transcript</button>
                         </div>
                         <div style={{ padding: '24px' }}>
-                          {showTranscript ? <TranscriptPanel ref={transcriptRef} transcript={selectedSubmission.transcript} flashLineIndex={flashLineIndex} flashKind={flashKind} /> : <MarkdownRenderer content={selectedSubmission.output} transcript={selectedSubmission.transcript} onJump={handleJumpToTranscript} />}
+                          {showTranscript ? <TranscriptPanel ref={transcriptRef} transcript={selectedSubmission.transcript} highlightSpan={highlightSpan} highlightKind={highlightKind} /> : <MarkdownRenderer content={selectedSubmission.output} transcript={selectedSubmission.transcript} onJump={handleJumpToTranscript} />}
                         </div>
                       </div>
                     </div>
@@ -1231,7 +1253,7 @@ export default function NextPlayCoachingApp() {
                             <button onClick={() => setShowTranscript(true)} style={{ flex: 1, padding: '12px', backgroundColor: showTranscript ? styles.colors.bgHover : 'transparent', border: 'none', color: showTranscript ? styles.colors.text : styles.colors.textMuted, fontWeight: '600', cursor: 'pointer' }}>Transcript</button>
                           </div>
                           <div style={{ padding: '24px' }}>
-                            {showTranscript ? <TranscriptPanel ref={transcriptRef} transcript={selectedSubmission.transcript} flashLineIndex={flashLineIndex} flashKind={flashKind} /> : <MarkdownRenderer content={selectedSubmission.output} transcript={selectedSubmission.transcript} onJump={handleJumpToTranscript} />}
+                            {showTranscript ? <TranscriptPanel ref={transcriptRef} transcript={selectedSubmission.transcript} highlightSpan={highlightSpan} highlightKind={highlightKind} /> : <MarkdownRenderer content={selectedSubmission.output} transcript={selectedSubmission.transcript} onJump={handleJumpToTranscript} />}
                           </div>
                         </div>
                       </div>
