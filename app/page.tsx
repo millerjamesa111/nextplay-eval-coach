@@ -217,6 +217,18 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
     let tableRows: string[] = [];
     let listItems: string[] = [];
     let inList = false;
+
+    // Track which numbered report section we're in, so jump tags only appear in
+    // section 4 (Where It Clicked / The Biggest Miss) and section 5 (Replay These
+    // Moments). Keyed off the section NUMBER, not the title, so it works whether
+    // section 4 is titled "WHERE IT CLICKED" or "THE BIGGEST MISS".
+    let currentSection: number | null = null;
+    const sectionFromLine = (raw: string): number | null => {
+      const t = raw.replace(/^#+\s*/, '').replace(/\*\*/g, '').trim();
+      const m = t.match(/^(\d+)\.\s+\S/);
+      return m ? parseInt(m[1], 10) : null;
+    };
+    const tagsAllowedHere = () => currentSection === 4 || currentSection === 5;
     
     const processInlineStyles = (line: string) => {
       line = line.replace(/\*\*(.+?)\*\*/g, '<strong style="color:#f9fafb;">$1</strong>');
@@ -318,6 +330,9 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
     
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      // Update which report section we're in whenever a numbered header appears.
+      const maybeSection = sectionFromLine(line);
+      if (maybeSection !== null) currentSection = maybeSection;
       if (line.startsWith('```')) {
         if (inCodeBlock) {
           elements.push(<pre key={`code-${elements.length}`} style={{ backgroundColor: '#0a0f1a', padding: '16px', borderRadius: '8px', overflow: 'auto', margin: '16px 0', fontSize: '13px', lineHeight: '1.5', color: '#f9fafb' }}>{codeContent.join('\n')}</pre>);
@@ -342,7 +357,7 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       if (line.startsWith('> ')) {
         flushList();
         const inner = line.replace('> ', '');
-        const tag = (transcript && lineHasMatchingQuote(transcript, inner)) ? quoteTag(inner, `q-${elements.length}`) : null;
+        const tag = (tagsAllowedHere() && transcript && lineHasMatchingQuote(transcript, inner)) ? quoteTag(inner, `q-${elements.length}`) : null;
         elements.push(
           <blockquote key={`quote-${elements.length}`} style={{ borderLeft: '3px solid #22c55e', paddingLeft: '16px', margin: '12px 0', color: '#d1d5db', fontStyle: 'italic' }}>
             <span dangerouslySetInnerHTML={{ __html: processInlineStyles(inner) }} />
@@ -368,9 +383,9 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
         }
         continue;
       }
-      // Plain paragraph — if it contains a quote that matches the transcript,
-      // append a jump tag (speaker label, if any, doesn't matter).
-      if (transcript && lineHasMatchingQuote(transcript, line)) {
+      // Plain paragraph — append a jump tag only inside sections 4 and 5, and
+      // only when it contains a quote that matches the transcript.
+      if (tagsAllowedHere() && transcript && lineHasMatchingQuote(transcript, line)) {
         const tag = quoteTag(line, `p-${elements.length}`);
         elements.push(
           <p key={`p-${elements.length}`} style={{ margin: '12px 0', lineHeight: '1.7', color: '#f9fafb', fontSize: '15px' }}>
