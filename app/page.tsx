@@ -358,7 +358,13 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       const line = lines[i];
       // Update which report section we're in whenever a numbered header appears.
       const maybeSection = sectionFromLine(line);
-      if (maybeSection !== null) currentSection = maybeSection;
+      if (maybeSection !== null) {
+        currentSection = maybeSection;
+        // Any section header (any format) that names a copy-paste block turns the
+        // form flag on; any other numbered section turns it off.
+        if (/copy\/paste|copy-paste|FORM OUTPUT|Form Output|POST-CALL NOTE|Post-Call Note|POST-CALL FORM|Post-Call Form/i.test(line)) inFormSection = true;
+        else inFormSection = false;
+      }
       if (line.startsWith('```')) {
         if (inCodeBlock) {
           elements.push(<pre key={`code-${elements.length}`} style={{ backgroundColor: '#0a0f1a', padding: '16px', borderRadius: '8px', overflow: 'auto', margin: '16px 0', fontSize: '13px', lineHeight: '1.5', color: '#f9fafb' }}>{codeContent.join('\n')}</pre>);
@@ -780,13 +786,27 @@ export default function NextPlayCoachingApp() {
     // Isolate the dimension scorecard section so we don't pick up the overall grade line
     const sectionMatch = text.match(/DIMENSION SCORECARD([\s\S]*?)(?:\n#{1,3}\s|\n###|ONE THING TO LOCK|$)/i);
     const section = sectionMatch ? sectionMatch[1] : text;
-    // Pull the grade out of each table row: | Dimension | Grade | Note |
-    const rowRegex = /\|[^\n|]+\|\s*([A-F][+\-]?)\s*\|/g;
-    const points: number[] = [];
+   const points: number[] = [];
+    // Match both pipe tables (| Dimension | A- | Note |) and tab/multi-space
+    // separated rows (Dimension<TAB>A-<TAB>Note) that the model sometimes emits.
+    const pipeRegex = /\|[^\n|]+\|\s*([A-F][+\-]?)\s*\|/g;
     let m;
-    while ((m = rowRegex.exec(section)) !== null) {
+    while ((m = pipeRegex.exec(section)) !== null) {
       const pts = gradeToPoints(m[1]);
       if (pts !== null) points.push(pts);
+    }
+    // Fallback: if no pipe rows found, parse tab/space-separated rows.
+    if (points.length === 0) {
+      for (const row of section.split('\n')) {
+        // A scorecard row: label, then a standalone grade token, then a note.
+        const tm = row.match(/^\s*\S.*?[\t]{1,}\s*([A-F][+\-]?)\b/) 
+                || row.match(/^\s*\S.*?\s{2,}([A-F][+\-]?)\s{2,}\S/);
+        if (tm) {
+          const pts = gradeToPoints(tm[1]);
+          if (pts !== null) points.push(pts);
+        }
+      }
+    }
     }
     if (points.length < 3) return null; // not enough dimensions found — fall back
     const avg = points.reduce((a, b) => a + b, 0) / points.length;
