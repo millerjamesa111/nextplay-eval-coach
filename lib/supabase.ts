@@ -42,6 +42,7 @@ export interface Submission {
   flagged: boolean;
   transcript_header: string | null;  // v7: for duplicate detection
   rep_id: string | null;              // v7: link to reps table
+  call_type: string | null;          // v8: Game Plan / Auto Book / Dialer
 }
 
 export interface Rep {
