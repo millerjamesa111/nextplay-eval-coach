@@ -254,7 +254,7 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       const m = t.match(/^(\d+)\.\s+\S/);
       return m ? parseInt(m[1], 10) : null;
     };
-    const tagsAllowedHere = () => currentSection === 4 || currentSection === 5;
+    const tagsAllowedHere = () => !inFormSection;
     
     const processInlineStyles = (line: string) => {
       line = line.replace(/\*\*(.+?)\*\*/g, '<strong style="color:#f9fafb;">$1</strong>');
