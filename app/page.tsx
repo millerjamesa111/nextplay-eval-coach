@@ -244,10 +244,9 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
     let listItems: string[] = [];
     let inList = false;
 
-    // Track which numbered report section we're in, so jump tags only appear in
-    // section 4 (Where It Clicked / The Biggest Miss) and section 5 (Replay These
-    // Moments). Keyed off the section NUMBER, not the title, so it works whether
-    // section 4 is titled "WHERE IT CLICKED" or "THE BIGGEST MISS".
+    // Track which numbered report section we're in. Jump tags are allowed in any
+    // section EXCEPT copy-paste blocks (Form Output / Post-Call Note), which we
+    // detect by header text below.
     let currentSection: number | null = null;
     const sectionFromLine = (raw: string): number | null => {
       const t = raw.replace(/^#+\s*/, '').replace(/\*\*/g, '').trim();
@@ -255,7 +254,12 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       return m ? parseInt(m[1], 10) : null;
     };
     const tagsAllowedHere = () => !inFormSection;
-    
+
+    // True if a line is a header that names a copy-paste block (any format:
+    // ###, bold, or plain numbered). Used to suppress jump tags there.
+    const isCopyPasteHeader = (raw: string): boolean =>
+      /copy\/paste|copy-paste|FORM OUTPUT|Form Output|POST-CALL NOTE|Post-Call Note|POST-CALL FORM|Post-Call Form/i.test(raw);
+
     const processInlineStyles = (line: string) => {
       line = line.replace(/\*\*(.+?)\*\*/g, '<strong style="color:#f9fafb;">$1</strong>');
       line = line.replace(/__(.+?)__/g, '<strong style="color:#f9fafb;">$1</strong>');
@@ -263,7 +267,7 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       line = line.replace(/`([^`]+)`/g, '<code style="background:#1f2937;padding:2px 6px;border-radius:4px;font-size:13px;">$1</code>');
       return line;
     };
-    
+
     const parseFormField = (line: string): { question: string; answer: string } | null => {
       const match = line.match(/^([^:]+\??)\s*:\s*(.+)$/);
       if (match && match[2].trim().length > 0) {
@@ -271,10 +275,10 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       }
       return null;
     };
-    
+
     let inFormSection = false;
     const seenQuestions = new Set<string>();
-    
+
     // Render a "Go to transcript" tag next to a line. Only called for lines
     // that already contain a transcript-matching quote, so the tag is always live.
     const quoteTag = (line: string, key: string) => {
@@ -297,7 +301,7 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
         </button>
       );
     };
-    
+
     const flushList = () => {
       if (listItems.length > 0) {
         elements.push(
@@ -320,7 +324,7 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       }
       inList = false;
     };
-    
+
     const flushTable = () => {
       if (tableRows.length > 0) {
         const headerRow = tableRows[0];
@@ -353,16 +357,16 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       }
       inTable = false;
     };
-    
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      // Update which report section we're in whenever a numbered header appears.
+      // Update which report section we're in whenever a numbered header appears,
+      // and set the copy-paste flag from that header (works for ###, bold, or
+      // plain numbered headers, since the model doesn't always use ###).
       const maybeSection = sectionFromLine(line);
       if (maybeSection !== null) {
         currentSection = maybeSection;
-        // Any section header (any format) that names a copy-paste block turns the
-        // form flag on; any other numbered section turns it off.
-        if (/copy\/paste|copy-paste|FORM OUTPUT|Form Output|POST-CALL NOTE|Post-Call Note|POST-CALL FORM|Post-Call Form/i.test(line)) inFormSection = true;
+        if (isCopyPasteHeader(line)) inFormSection = true;
         else inFormSection = false;
       }
       if (line.startsWith('```')) {
@@ -379,13 +383,13 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
       if (line.includes('|') && line.trim().startsWith('|')) { flushList(); if (!inTable) inTable = true; tableRows.push(line); continue; } else if (inTable) { flushTable(); }
       if (line.startsWith('### ')) {
         flushList();
-        if (/copy\/paste|copy-paste|FORM OUTPUT|Form Output|POST-CALL NOTE|Post-Call Note|POST-CALL FORM|Post-Call Form/i.test(line)) inFormSection = true;
+        if (isCopyPasteHeader(line)) inFormSection = true;
         else inFormSection = false;
         elements.push(<h3 key={`h3-${elements.length}`} style={{ color: '#22c55e', fontSize: '16px', fontWeight: '700', margin: '28px 0 12px 0', borderBottom: '1px solid #374151', paddingBottom: '8px' }}>{line.replace('### ', '').replace(/\*\*/g, '')}</h3>);
         continue;
       }
-      if (line.startsWith('## ')) { flushList(); inFormSection = false; elements.push(<h2 key={`h2-${elements.length}`} style={{ color: '#f9fafb', fontSize: '20px', fontWeight: '800', margin: '28px 0 16px 0' }}>{line.replace('## ', '').replace(/\*\*/g, '')}</h2>); continue; }
-      if (line.startsWith('# ')) { flushList(); inFormSection = false; elements.push(<h1 key={`h1-${elements.length}`} style={{ color: '#f9fafb', fontSize: '24px', fontWeight: '800', margin: '32px 0 16px 0' }}>{line.replace('# ', '').replace(/\*\*/g, '')}</h1>); continue; }
+      if (line.startsWith('## ')) { flushList(); if (isCopyPasteHeader(line)) inFormSection = true; else inFormSection = false; elements.push(<h2 key={`h2-${elements.length}`} style={{ color: '#f9fafb', fontSize: '20px', fontWeight: '800', margin: '28px 0 16px 0' }}>{line.replace('## ', '').replace(/\*\*/g, '')}</h2>); continue; }
+      if (line.startsWith('# ')) { flushList(); if (isCopyPasteHeader(line)) inFormSection = true; else inFormSection = false; elements.push(<h1 key={`h1-${elements.length}`} style={{ color: '#f9fafb', fontSize: '24px', fontWeight: '800', margin: '32px 0 16px 0' }}>{line.replace('# ', '').replace(/\*\*/g, '')}</h1>); continue; }
       if (line.startsWith('> ')) {
         flushList();
         const inner = line.replace('> ', '');
@@ -415,8 +419,8 @@ const MarkdownRenderer = ({ content, transcript, onJump }: { content: string; tr
         }
         continue;
       }
-      // Plain paragraph — append a jump tag only inside sections 4 and 5, and
-      // only when it contains a quote that matches the transcript.
+      // Plain paragraph — append a jump tag anywhere outside copy-paste blocks,
+      // and only when it contains a quote that matches the transcript.
       if (tagsAllowedHere() && transcript && lineHasMatchingQuote(transcript, line)) {
         const tag = quoteTag(line, `p-${elements.length}`);
         elements.push(
@@ -615,12 +619,12 @@ export default function NextPlayCoachingApp() {
     interviewDate: db.interview_date, flagged: db.flagged, transcriptHeader: db.transcript_header,
     callType: db.call_type ?? null,
   });
-  
+
   const loadSubmissions = async () => {
     const { data, error } = await supabase.from('submissions').select('*').order('created_at', { ascending: false });
     if (data && !error) setSubmissions(data.map(dbToLocal));
   };
-  
+
   const loadReps = async () => {
     const { data, error } = await supabase.from('reps').select('*').order('created_at', { ascending: true });
     if (data && !error) {
@@ -629,44 +633,44 @@ export default function NextPlayCoachingApp() {
       setReps(repsMap);
     }
   };
-  
+
   const loadSettings = async () => {
     const { data: promptData } = await supabase.from('settings').select('value').eq('key', 'system_prompt').single();
     if (promptData?.value) setSystemPrompt(promptData.value);
     const { data: coachingRefData } = await supabase.from('settings').select('value').eq('key', 'coaching_reference').single();
     if (coachingRefData?.value) setCoachingRefDoc(coachingRefData.value);
   };
-  
+
   const saveSystemPrompt = async (prompt: string) => {
     setSystemPrompt(prompt);
     await supabase.from('settings').upsert({ key: 'system_prompt', value: prompt, updated_at: new Date().toISOString() }, { onConflict: 'key' });
     setPromptSaved(true); setTimeout(() => setPromptSaved(false), 2000);
   };
-  
+
   const resetSystemPrompt = async () => {
     setSystemPrompt(DEFAULT_SYSTEM_PROMPT);
     await supabase.from('settings').upsert({ key: 'system_prompt', value: DEFAULT_SYSTEM_PROMPT, updated_at: new Date().toISOString() }, { onConflict: 'key' });
     setPromptSaved(true); setTimeout(() => setPromptSaved(false), 2000);
   };
-  
+
   const saveCoachingRefDoc = async (doc: string) => {
     setCoachingRefDoc(doc);
     await supabase.from('settings').upsert({ key: 'coaching_reference', value: doc, updated_at: new Date().toISOString() }, { onConflict: 'key' });
     setCoachingRefSaved(true); setTimeout(() => setCoachingRefSaved(false), 2000);
   };
-  
+
   const validateRepCode = (code: string): Rep | null => {
     const normalized = code.trim().toLowerCase();
     return reps[normalized] && reps[normalized].active ? reps[normalized] : null;
   };
-  
+
   const extractTranscriptHeader = (transcript: string): string => transcript.split('\n')[0].trim();
-  
+
   const checkDuplicate = async (header: string): Promise<boolean> => {
     const { data } = await supabase.from('submissions').select('id').eq('transcript_header', header).limit(1);
     return !!(data && data.length > 0);
   };
-  
+
   const saveSubmission = async (submission: LocalSubmission) => {
     const rep = validateRepCode(submission.repCode);
     const { data, error } = await supabase.from('submissions').insert({
@@ -682,29 +686,29 @@ export default function NextPlayCoachingApp() {
     }
     return null;
   };
-  
+
   const deleteSubmission = async (id: string) => {
     await supabase.from('submissions').delete().eq('id', id);
     setSubmissions(prev => prev.filter(s => s.id !== id));
     setSelectedSubmission(null);
   };
-  
+
   const toggleSelectSubmission = (id: string) => setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
-  
+
   const toggleSelectAll = () => {
     const filteredIds = filteredSubmissions.map(s => s.id);
     const allSelected = filteredIds.every(id => selectedIds.includes(id));
     if (allSelected) setSelectedIds(prev => prev.filter(id => !filteredIds.includes(id)));
     else setSelectedIds(prev => Array.from(new Set([...prev, ...filteredIds])));
   };
-  
+
   const deleteSelectedSubmissions = async () => {
     if (selectedIds.length === 0) return;
     for (const id of selectedIds) await supabase.from('submissions').delete().eq('id', id);
     setSubmissions(prev => prev.filter(s => !selectedIds.includes(s.id)));
     setSelectedIds([]);
   };
-  
+
   const downloadSelectedSubmissions = () => {
     if (selectedIds.length === 0) return;
     const selected = submissions.filter(s => selectedIds.includes(s.id));
@@ -720,7 +724,7 @@ export default function NextPlayCoachingApp() {
     a.download = `nextplay-analysis-${new Date().toISOString().split('T')[0]}.md`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
-  
+
   const generateTrendsReport = async () => {
     let filtered = [...submissions];
     if (trendsRep !== 'all') filtered = filtered.filter(s => normalizeRepName(s.repName) === trendsRep);
@@ -732,7 +736,7 @@ export default function NextPlayCoachingApp() {
     if (filtered.length < 2) { alert('Need at least 2 submissions to generate a trends report.'); return; }
     const replayMoments = filtered.map(s => {
       const output = s.output || '';
-      const replayMatch = output.match(/### 5\. REPLAY THESE MOMENTS([\s\S]*?)(?=###|$)/i);
+      const replayMatch = output.match(/REPLAY THESE MOMENTS([\s\S]*?)(?=\n#{1,3}\s|\n\d+\.\s|\n---|$)/i);
       return { repName: s.repName, athleteName: s.athleteName, grade: s.grade, date: s.timestamp, moments: replayMatch ? replayMatch[1].trim() : '' };
     }).filter(r => r.moments.length > 0);
     if (replayMoments.length < 2) { alert('Not enough "Replay These Moments" data to analyze.'); return; }
@@ -742,10 +746,10 @@ export default function NextPlayCoachingApp() {
       const data = await response.json();
       if (data.error) throw new Error(data.error);
       setTrendsReport(data);
-    } catch (error) { console.error('Error generating trends:', error); alert('Failed to generate trends report. Please try again.'); }
+    } catch (error) { console.error('Error generating trends:', error); alert('Failed to generate trends: ' + (error instanceof Error ? error.message : 'Unknown error')); }
     setTrendsLoading(false);
   };
-  
+
   const extractGrade = (text: string) => {
     const gradeMatch = text.match(/\*\*Grade:\s*([A-F][+\-]*)\*\*/i) || text.match(/Grade:\s*([A-F][+\-]*)/i);
     return gradeMatch ? gradeMatch[1] : null;
@@ -780,26 +784,25 @@ export default function NextPlayCoachingApp() {
   };
 
   // Compute the overall grade as the average of the dimension-scorecard grades.
-  // Reads grades out of the markdown table rows in section 7. Falls back to the
-  // model's stated overall grade if it can't find enough dimension grades.
+  // Reads grades out of the scorecard section. Handles BOTH pipe tables
+  // (| Dimension | A- | Note |) and tab/multi-space rows (Dimension<TAB>A-<TAB>Note)
+  // that the model sometimes emits. Falls back to the model's stated overall
+  // grade only if it can't find at least 3 dimension grades.
   const computeOverallGrade = (text: string): string | null => {
-    // Isolate the dimension scorecard section so we don't pick up the overall grade line
     const sectionMatch = text.match(/DIMENSION SCORECARD([\s\S]*?)(?:\n#{1,3}\s|\n###|ONE THING TO LOCK|$)/i);
     const section = sectionMatch ? sectionMatch[1] : text;
-   const points: number[] = [];
-    // Match both pipe tables (| Dimension | A- | Note |) and tab/multi-space
-    // separated rows (Dimension<TAB>A-<TAB>Note) that the model sometimes emits.
+    const points: number[] = [];
+    // Pipe-table rows first.
     const pipeRegex = /\|[^\n|]+\|\s*([A-F][+\-]?)\s*\|/g;
     let m;
     while ((m = pipeRegex.exec(section)) !== null) {
       const pts = gradeToPoints(m[1]);
       if (pts !== null) points.push(pts);
     }
-    // Fallback: if no pipe rows found, parse tab/space-separated rows.
+    // Fallback: tab- or multi-space-separated rows when no pipes were found.
     if (points.length === 0) {
       for (const row of section.split('\n')) {
-        // A scorecard row: label, then a standalone grade token, then a note.
-        const tm = row.match(/^\s*\S.*?[\t]{1,}\s*([A-F][+\-]?)\b/) 
+        const tm = row.match(/^\s*\S.*?\t+\s*([A-F][+\-]?)\b/)
                 || row.match(/^\s*\S.*?\s{2,}([A-F][+\-]?)\s{2,}\S/);
         if (tm) {
           const pts = gradeToPoints(tm[1]);
@@ -807,12 +810,11 @@ export default function NextPlayCoachingApp() {
         }
       }
     }
-    }
-    if (points.length < 3) return null; // not enough dimensions found — fall back
+    if (points.length < 3) return null;
     const avg = points.reduce((a, b) => a + b, 0) / points.length;
     return pointsToGrade(avg);
   };
-  
+
   // Pull a clean first + last name from the WAVV transcript header. The first
   // non-empty line of a WAVV export is the contact name ("Shay Drummer"),
   // before the phone number / status / date lines. Used as a fallback when the
@@ -820,48 +822,44 @@ export default function NextPlayCoachingApp() {
   const extractNameFromHeader = (transcript: string): string => {
     const lines = transcript.split('\n').map(l => l.trim()).filter(Boolean);
     for (const line of lines) {
-      // Skip lines that are clearly not a name: phone numbers, statuses, dates,
-      // timestamps, or section labels.
       if (/\d/.test(line)) continue;
       if (/^(callback|no answer|answered|voicemail|completed|summary|discussion|action items|full transcript|highlights)/i.test(line)) continue;
-      // A name is 2-4 capitalized words.
       if (/^[A-Z][a-zA-Z'’\-]+(?:\s+[A-Z][a-zA-Z'’\-]+){1,3}$/.test(line)) return line;
     }
     return '';
   };
 
   const extractAthleteName = (text: string) => {
-    // Prefer the full parent name (first + last) from the form output
-    const firstMatch = text.match(/Parent First Name:\s*([^\n]+)/i);
-    const lastMatch = text.match(/Parent Last Name:\s*([^\n]+)/i);
     const clean = (s: string | undefined) => {
       if (!s) return '';
       const v = s.trim();
-      // ignore blanks/placeholders the model might leave
       if (!v || /^(n\/?a|none|not (covered|provided|stated|mentioned)|unknown|\[.*\])$/i.test(v)) return '';
-      // ignore "Not stated — confirm" style values
       if (/not stated/i.test(v)) return '';
       return v;
     };
+    // Dialer / Auto Book post-call notes use a single "PARENT:" line.
+    const parentLine = text.match(/^\s*PARENT:\s*([^\n]+)/im);
+    const parentClean = clean(parentLine?.[1]);
+    if (parentClean) return parentClean;
+    // Game Plan form output uses Parent First Name / Parent Last Name.
+    const firstMatch = text.match(/Parent First Name:\s*([^\n]+)/i);
+    const lastMatch = text.match(/Parent Last Name:\s*([^\n]+)/i);
     const first = clean(firstMatch?.[1]);
     const last = clean(lastMatch?.[1]);
     const full = [first, last].filter(Boolean).join(' ');
     if (full) return full;
-    // Fallbacks: any single-name field, then the header
     const nameMatch = text.match(/Athlete's Name:\s*([^\n]+)/i)
       || text.match(/ATHLETE:\s*([^,\n]+)/i)
       || text.match(/Eval Call\s*[–-]\s*([A-Za-z]+)/i)
       || text.match(/Athlete Interview\s*[–-]\s*([A-Za-z]+)/i);
     return nameMatch ? nameMatch[1].trim() : '';
   };
-  
+
   const extractInterviewDate = (transcript: string) => {
     const patterns = [
-      // Date + time forms (most specific first)
       /(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}(?:\s+[A-Z]{2,4})?)/i,
       /(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?)/i,
       /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/i,
-      // Bare calendar dates — the WAVV summary export uses these (e.g. "Jun 9, 2026")
       /\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4})\b/i,
       /\b(\d{1,2}\/\d{1,2}\/\d{4})\b/,
       /\b(\d{4}-\d{2}-\d{2})\b/,
@@ -871,8 +869,6 @@ export default function NextPlayCoachingApp() {
       if (match) {
         const raw = match[1];
         try {
-          // For slash date+time keep the slash->dash swap that Date() prefers;
-          // for the other forms parse the raw string directly.
           const hasTime = /\d:\d/.test(raw);
           const dateStr = hasTime
             ? raw.replace(/\//g, '-').replace(/\s+[A-Z]{2,4}$/i, '')
@@ -885,7 +881,7 @@ export default function NextPlayCoachingApp() {
     }
     return null;
   };
-  
+
   const handleSubmit = async () => {
     setSubmitError('');
     const transcriptInput = document.getElementById('transcript-input') as HTMLTextAreaElement;
@@ -923,7 +919,7 @@ export default function NextPlayCoachingApp() {
       }
       const grade = computeOverallGrade(fullOutput) || extractGrade(fullOutput);
       const typedParent = parentName.trim();
-      // Name priority: typed > model output (first+last) > WAVV header > Unknown
+      // Name priority: typed > model output (PARENT / first+last) > WAVV header > Unknown
       const athleteName = typedParent || extractAthleteName(fullOutput) || extractNameFromHeader(transcriptText) || 'Unknown';
       const interviewDate = extractInterviewDate(transcriptText);
       const submission: LocalSubmission = {
@@ -938,7 +934,7 @@ export default function NextPlayCoachingApp() {
     } catch (error) { console.error('Error:', error); setResult({ error: 'Failed to analyze transcript. Please try again.' }); }
     setIsLoading(false);
   };
-  
+
   const handleAddRep = async () => {
     if (!newRepName.trim() || !newRepCode.trim()) return;
     const code = newRepCode.trim().toLowerCase();
@@ -947,7 +943,7 @@ export default function NextPlayCoachingApp() {
     if (!error && data) { setReps(prev => ({ ...prev, [code]: data })); setNewRepName(''); setNewRepCode(''); setShowAddRep(false); }
     else alert('Failed to add rep. Code may already exist.');
   };
-  
+
   const handleUpdateRep = async (oldCode: string, newName: string, newCode: string) => {
     const rep = reps[oldCode];
     if (!rep) return;
@@ -959,14 +955,14 @@ export default function NextPlayCoachingApp() {
       setReps(updatedReps); setEditingRep(null); loadSubmissions();
     } else alert('Failed to update rep.');
   };
-  
+
   const handleToggleRepActive = async (code: string) => {
     const rep = reps[code];
     if (!rep) return;
     const { error } = await supabase.from('reps').update({ active: !rep.active }).eq('id', rep.id);
     if (!error) setReps(prev => ({ ...prev, [code]: { ...prev[code], active: !prev[code].active } }));
   };
-  
+
   const filteredSubmissions = submissions.filter(sub => {
     if (filterRep !== 'all' && normalizeRepName(sub.repName) !== filterRep) return false;
     if (filterGrade !== 'all' && sub.grade?.charAt(0) !== filterGrade) return false;
@@ -983,22 +979,20 @@ export default function NextPlayCoachingApp() {
     }
     return true;
   }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  
+
   const mySubmissions = submissions.filter(s => {
     const rep = validateRepCode(viewRepCode);
     return rep && normalizeRepName(s.repName) === normalizeRepName(rep.rep_name);
   }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  
+
   const repNames = Array.from(new Set(submissions.map(s => normalizeRepName(s.repName)))).filter(Boolean);
 
-  // Shared little date helpers for the list rows
   const fmtDate = (d: string | null | undefined) => d ? new Date(d).toLocaleDateString() : '—';
-
 
   // ============================================
   // MAIN RENDER - ALL VIEWS INLINED
   // ============================================
-  
+
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif" }}>
       {/* Navigation */}
@@ -1026,9 +1020,9 @@ export default function NextPlayCoachingApp() {
           borderRadius: '8px', fontSize: '14px', fontWeight: '600', cursor: 'pointer',
         }}>Admin Dashboard</button>
       </nav>
-      
+
       <div style={{ paddingTop: '60px' }}>
-        
+
         {/* ========== REP VIEW (Submit Transcript) ========== */}
         {view === 'rep' && (
           <div style={{ minHeight: '100vh', backgroundColor: styles.colors.bg, padding: '40px 20px' }}>
@@ -1040,7 +1034,7 @@ export default function NextPlayCoachingApp() {
                 </div>
                 <p style={{ color: styles.colors.accent, fontSize: '14px', fontWeight: '600', letterSpacing: '2px', textTransform: 'uppercase', margin: 0 }}>Eval Specialist Command Center</p>
               </div>
-              
+
               {!result ? (
                 <>
                   <div style={{ backgroundColor: styles.colors.bgCard, borderRadius: '12px', padding: '32px', border: `1px solid ${styles.colors.border}` }}>
@@ -1133,7 +1127,7 @@ export default function NextPlayCoachingApp() {
             </div>
           </div>
         )}
-        
+
         {/* ========== MY SUBMISSIONS VIEW ========== */}
         {view === 'mySubmissions' && (
           <div style={{ minHeight: '100vh', backgroundColor: styles.colors.bg, padding: '40px 20px' }}>
@@ -1202,7 +1196,7 @@ export default function NextPlayCoachingApp() {
             </div>
           </div>
         )}
-        
+
         {/* ========== ADMIN VIEW ========== */}
         {view === 'admin' && (
           !isAuthenticated ? (
@@ -1224,7 +1218,7 @@ export default function NextPlayCoachingApp() {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
                   <div><h1 style={{ color: styles.colors.text, fontSize: '28px', fontWeight: '800', margin: '0 0 4px 0' }}>📊 Admin Dashboard</h1><p style={{ color: styles.colors.textMuted, fontSize: '14px', margin: 0 }}>{submissions.length} total submissions</p></div>
                 </div>
-                
+
                 {/* Admin Tabs */}
                 <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', borderBottom: `1px solid ${styles.colors.border}`, paddingBottom: '16px', flexWrap: 'wrap' }}>
                   {(['submissions', 'reps', 'instructions', 'objections', 'trends'] as const).map(tab => (
@@ -1234,7 +1228,7 @@ export default function NextPlayCoachingApp() {
                     </button>
                   ))}
                 </div>
-                
+
                 {/* MANAGE REPS TAB */}
                 {adminTab === 'reps' && (
                   <div>
@@ -1278,7 +1272,7 @@ export default function NextPlayCoachingApp() {
                     </div>
                   </div>
                 )}
-                
+
                 {/* EDIT INSTRUCTIONS TAB */}
                 {adminTab === 'instructions' && (
                   <div>
@@ -1296,7 +1290,7 @@ export default function NextPlayCoachingApp() {
                     </div>
                   </div>
                 )}
-                
+
                 {/* OBJECTION HANDLING TAB */}
                 {adminTab === 'objections' && (
                   <div>
@@ -1312,7 +1306,7 @@ export default function NextPlayCoachingApp() {
                     <button onClick={() => saveCoachingRefDoc(coachingRefDoc)} style={{ padding: '12px 24px', backgroundColor: styles.colors.accent, color: '#000', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: '700', cursor: 'pointer' }}>Save Coaching Reference Library</button>
                   </div>
                 )}
-                
+
                 {/* TRENDS REPORT TAB */}
                 {adminTab === 'trends' && (
                   <div>
@@ -1338,7 +1332,7 @@ export default function NextPlayCoachingApp() {
                             <p style={{ color: styles.colors.textMuted, fontSize: '14px', marginBottom: '8px' }}>{pattern.description}</p>
                             {pattern.examples.length > 0 && (
                               <div style={{ borderLeft: `2px solid ${styles.colors.border}`, paddingLeft: '12px' }}>
-                                {pattern.examples.map((ex, j) => <p key={j} style={{ color: styles.colors.text, fontSize: '13px', margin: '4px 0', fontStyle: 'italic' }}>"{ex}"</p>)}
+                                {pattern.examples.map((ex, j) => <p key={j} style={{ color: styles.colors.text, fontSize: '13px', margin: '4px 0', fontStyle: 'italic' }}>&quot;{ex}&quot;</p>)}
                               </div>
                             )}
                           </div>
@@ -1351,7 +1345,7 @@ export default function NextPlayCoachingApp() {
                     )}
                   </div>
                 )}
-                
+
                 {/* SUBMISSIONS TAB */}
                 {adminTab === 'submissions' && (
                   <>
