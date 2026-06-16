@@ -510,6 +510,7 @@ export default function NextPlayCoachingApp() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [filterRep, setFilterRep] = useState('all');
   const [filterGrade, setFilterGrade] = useState('all');
+  const [filterType, setFilterType] = useState('all');
   const [filterDateRange, setFilterDateRange] = useState('all');
   const [filterDateStart, setFilterDateStart] = useState('');
   const [filterDateEnd, setFilterDateEnd] = useState('');
@@ -949,6 +950,7 @@ export default function NextPlayCoachingApp() {
   const filteredSubmissions = submissions.filter(sub => {
     if (filterRep !== 'all' && normalizeRepName(sub.repName) !== filterRep) return false;
     if (filterGrade !== 'all' && sub.grade?.charAt(0) !== filterGrade) return false;
+    if (filterType !== 'all' && (sub.callType || '').trim().toLowerCase() !== filterType) return false;
     const subDate = new Date(sub.interviewDate || sub.timestamp);
     const now = new Date();
     if (filterDateRange !== 'all' && filterDateRange !== 'custom') {
@@ -1365,6 +1367,9 @@ export default function NextPlayCoachingApp() {
                           </select>
                           <select value={filterGrade} onChange={(e) => setFilterGrade(e.target.value)} style={{ padding: '10px 16px', backgroundColor: styles.colors.bgCard, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '14px' }}>
                             <option value="all">All Grades</option><option value="A">A Range</option><option value="B">B Range</option><option value="C">C or Below</option>
+                          </select>
+                          <select value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ padding: '10px 16px', backgroundColor: styles.colors.bgCard, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '14px' }}>
+                            <option value="all">All Types</option><option value="game plan">Game Plan</option><option value="auto book">Auto Book</option><option value="dialer">Dialer</option>
                           </select>
                           <select value={filterDateRange} onChange={(e) => setFilterDateRange(e.target.value)} style={{ padding: '10px 16px', backgroundColor: styles.colors.bgCard, border: `1px solid ${styles.colors.border}`, borderRadius: '8px', color: styles.colors.text, fontSize: '14px' }}>
                             <option value="all">All Time</option><option value="today">Today</option><option value="week">Last 7 Days</option><option value="month">Last 30 Days</option><option value="custom">Custom Range</option>
