@@ -196,6 +196,32 @@ const GradeBadge = ({ grade }: { grade: string | null }) => {
   );
 };
 
+// Small colored pill showing the call type (Game Plan / Auto Book / Dialer).
+// Falls back to a neutral "—" pill for older submissions saved before call_type
+// was being stored.
+const CallTypeBadge = ({ callType }: { callType: string | null }) => {
+  const getColor = (ct: string | null) => {
+    if (!ct) return { bg: '#1f2937', text: '#9ca3af', label: '—' };
+    const v = ct.trim().toLowerCase();
+    if (v === 'game plan') return { bg: '#1e3a8a', text: '#93c5fd', label: 'Game Plan' };
+    if (v === 'auto book') return { bg: '#5b21b6', text: '#c4b5fd', label: 'Auto Book' };
+    if (v === 'dialer') return { bg: '#374151', text: '#d1d5db', label: 'Dialer' };
+    return { bg: '#374151', text: '#d1d5db', label: ct };
+  };
+  const c = getColor(callType);
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      padding: '3px 10px', borderRadius: '999px', backgroundColor: c.bg,
+      color: c.text, fontWeight: '600', fontSize: '11px',
+      fontFamily: "'Inter', -apple-system, sans-serif", letterSpacing: '0.3px',
+      whiteSpace: 'nowrap',
+    }}>
+      {c.label}
+    </span>
+  );
+};
+
 const Spinner = () => (
   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', padding: '40px' }}>
     <div style={{
@@ -460,6 +486,7 @@ interface LocalSubmission {
   interviewDate: string | null;
   flagged: boolean;
   transcriptHeader: string | null;
+  callType: string | null;
 }
 
 interface TrendsReport {
@@ -579,6 +606,7 @@ export default function NextPlayCoachingApp() {
     id: db.id, repName: db.rep_name, repCode: '', athleteName: db.athlete_name,
     grade: db.grade, output: db.output, transcript: db.transcript, timestamp: db.created_at,
     interviewDate: db.interview_date, flagged: db.flagged, transcriptHeader: db.transcript_header,
+    callType: db.call_type ?? null,
   });
   
   const loadSubmissions = async () => {
@@ -638,6 +666,7 @@ export default function NextPlayCoachingApp() {
       rep_name: submission.repName, athlete_name: submission.athleteName, grade: submission.grade,
       output: submission.output, transcript: submission.transcript, interview_date: submission.interviewDate,
       flagged: submission.flagged, transcript_header: submission.transcriptHeader, rep_id: rep?.id || null,
+      call_type: submission.callType,
     }).select().single();
     if (!error && data) {
       const savedSubmission = { ...submission, id: data.id };
@@ -674,8 +703,8 @@ export default function NextPlayCoachingApp() {
     const selected = submissions.filter(s => selectedIds.includes(s.id));
     let content = `# Next Play Coaching Analysis Export\n# ${selected.length} submissions exported on ${new Date().toLocaleDateString()}\n\n---\n\n`;
     selected.forEach((sub, index) => {
-      content += `## Submission ${index + 1}: ${sub.athleteName}\n**Rep:** ${sub.repName}\n**Grade:** ${sub.grade || 'N/A'}\n`;
-      content += `**Interview Date:** ${sub.interviewDate ? new Date(sub.interviewDate).toLocaleDateString() : 'N/A'}\n`;
+      content += `## Submission ${index + 1}: ${sub.athleteName}\n**Rep:** ${sub.repName}\n**Call Type:** ${sub.callType || 'N/A'}\n**Grade:** ${sub.grade || 'N/A'}\n`;
+      content += `**Call Date:** ${sub.interviewDate ? new Date(sub.interviewDate).toLocaleDateString() : 'N/A'}\n`;
       content += `**Submitted:** ${new Date(sub.timestamp).toLocaleDateString()}\n\n### Coaching Output\n\n${sub.output}\n\n---\n\n`;
     });
     const blob = new Blob([content], { type: 'text/markdown' });
@@ -763,6 +792,23 @@ export default function NextPlayCoachingApp() {
     return pointsToGrade(avg);
   };
   
+  // Pull a clean first + last name from the WAVV transcript header. The first
+  // non-empty line of a WAVV export is the contact name ("Shay Drummer"),
+  // before the phone number / status / date lines. Used as a fallback when the
+  // model output only yields a partial name.
+  const extractNameFromHeader = (transcript: string): string => {
+    const lines = transcript.split('\n').map(l => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      // Skip lines that are clearly not a name: phone numbers, statuses, dates,
+      // timestamps, or section labels.
+      if (/\d/.test(line)) continue;
+      if (/^(callback|no answer|answered|voicemail|completed|summary|discussion|action items|full transcript|highlights)/i.test(line)) continue;
+      // A name is 2-4 capitalized words.
+      if (/^[A-Z][a-zA-Z'’\-]+(?:\s+[A-Z][a-zA-Z'’\-]+){1,3}$/.test(line)) return line;
+    }
+    return '';
+  };
+
   const extractAthleteName = (text: string) => {
     // Prefer the full parent name (first + last) from the form output
     const firstMatch = text.match(/Parent First Name:\s*([^\n]+)/i);
@@ -772,6 +818,8 @@ export default function NextPlayCoachingApp() {
       const v = s.trim();
       // ignore blanks/placeholders the model might leave
       if (!v || /^(n\/?a|none|not (covered|provided|stated|mentioned)|unknown|\[.*\])$/i.test(v)) return '';
+      // ignore "Not stated — confirm" style values
+      if (/not stated/i.test(v)) return '';
       return v;
     };
     const first = clean(firstMatch?.[1]);
@@ -783,20 +831,35 @@ export default function NextPlayCoachingApp() {
       || text.match(/ATHLETE:\s*([^,\n]+)/i)
       || text.match(/Eval Call\s*[–-]\s*([A-Za-z]+)/i)
       || text.match(/Athlete Interview\s*[–-]\s*([A-Za-z]+)/i);
-    return nameMatch ? nameMatch[1].trim() : 'Unknown';
+    return nameMatch ? nameMatch[1].trim() : '';
   };
   
   const extractInterviewDate = (transcript: string) => {
-    const patterns = [/(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}(?:\s+[A-Z]{2,4})?)/i, /(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?)/i, /([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})/i, /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/i];
+    const patterns = [
+      // Date + time forms (most specific first)
+      /(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}(?:\s+[A-Z]{2,4})?)/i,
+      /(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?)/i,
+      /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/i,
+      // Bare calendar dates — the WAVV summary export uses these (e.g. "Jun 9, 2026")
+      /\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4})\b/i,
+      /\b(\d{1,2}\/\d{1,2}\/\d{4})\b/,
+      /\b(\d{4}-\d{2}-\d{2})\b/,
+    ];
     for (const pattern of patterns) {
       const match = transcript.match(pattern);
       if (match) {
+        const raw = match[1];
         try {
-          const dateStr = match[1].replace(/\//g, '-').replace(/\s+[A-Z]{2,4}$/i, '');
+          // For slash date+time keep the slash->dash swap that Date() prefers;
+          // for the other forms parse the raw string directly.
+          const hasTime = /\d:\d/.test(raw);
+          const dateStr = hasTime
+            ? raw.replace(/\//g, '-').replace(/\s+[A-Z]{2,4}$/i, '')
+            : raw;
           const parsed = new Date(dateStr);
           if (!isNaN(parsed.getTime())) return parsed.toISOString();
         } catch { /* continue */ }
-        return match[1];
+        return raw;
       }
     }
     return null;
@@ -839,12 +902,14 @@ export default function NextPlayCoachingApp() {
       }
       const grade = computeOverallGrade(fullOutput) || extractGrade(fullOutput);
       const typedParent = parentName.trim();
-      const athleteName = typedParent || extractAthleteName(fullOutput);
+      // Name priority: typed > model output (first+last) > WAVV header > Unknown
+      const athleteName = typedParent || extractAthleteName(fullOutput) || extractNameFromHeader(transcriptText) || 'Unknown';
       const interviewDate = extractInterviewDate(transcriptText);
       const submission: LocalSubmission = {
         id: Date.now().toString(), repName: rep.rep_name, repCode: normalizedCode, athleteName, grade,
         output: fullOutput, transcript: transcriptText, timestamp: new Date().toISOString(), interviewDate,
         flagged: ['B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F'].includes(grade || ''), transcriptHeader: header,
+        callType,
       };
       const saved = await saveSubmission(submission);
       setResult(saved || submission);
@@ -895,14 +960,17 @@ export default function NextPlayCoachingApp() {
       if (filterDateEnd) { const endDate = new Date(filterDateEnd); endDate.setHours(23, 59, 59, 999); if (subDate > endDate) return false; }
     }
     return true;
-  });
+  }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   
   const mySubmissions = submissions.filter(s => {
     const rep = validateRepCode(viewRepCode);
     return rep && normalizeRepName(s.repName) === normalizeRepName(rep.rep_name);
-  });
+  }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   
   const repNames = Array.from(new Set(submissions.map(s => normalizeRepName(s.repName)))).filter(Boolean);
+
+  // Shared little date helpers for the list rows
+  const fmtDate = (d: string | null | undefined) => d ? new Date(d).toLocaleDateString() : '—';
 
 
   // ============================================
@@ -1022,7 +1090,7 @@ export default function NextPlayCoachingApp() {
               ) : (
                 <div>
                   <div style={{ backgroundColor: 'rgba(34, 197, 94, 0.1)', border: `1px solid ${styles.colors.accent}`, borderRadius: '8px', padding: '16px 20px', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div><span style={{ color: styles.colors.accent, fontWeight: '700' }}>✓ Submission #{result.id.slice(-6)} saved</span><span style={{ color: styles.colors.textMuted, marginLeft: '12px' }}>{result.athleteName}</span></div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}><span style={{ color: styles.colors.accent, fontWeight: '700' }}>✓ Submission #{result.id.slice(-6)} saved</span><span style={{ color: styles.colors.textMuted }}>{result.athleteName}</span><CallTypeBadge callType={result.callType} /></div>
                     <GradeBadge grade={result.grade} />
                   </div>
                   <div style={{ backgroundColor: styles.colors.bgCard, borderRadius: '12px', border: `1px solid ${styles.colors.border}`, overflow: 'hidden' }}>
@@ -1069,7 +1137,10 @@ export default function NextPlayCoachingApp() {
                       <button onClick={() => setSelectedSubmission(null)} style={{ marginBottom: '16px', padding: '8px 16px', backgroundColor: 'transparent', border: `1px solid ${styles.colors.border}`, borderRadius: '6px', color: styles.colors.text, cursor: 'pointer' }}>← Back to List</button>
                       <div style={{ backgroundColor: styles.colors.bgCard, borderRadius: '12px', border: `1px solid ${styles.colors.border}`, overflow: 'hidden' }}>
                         <div style={{ padding: '20px 24px', borderBottom: `1px solid ${styles.colors.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div><h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: 0 }}>{selectedSubmission.athleteName}</h2><p style={{ color: styles.colors.textMuted, fontSize: '14px', margin: '4px 0 0' }}>{selectedSubmission.interviewDate ? new Date(selectedSubmission.interviewDate).toLocaleDateString() : new Date(selectedSubmission.timestamp).toLocaleDateString()}</p></div>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}><h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: 0 }}>{selectedSubmission.athleteName}</h2><CallTypeBadge callType={selectedSubmission.callType} /></div>
+                            <p style={{ color: styles.colors.textMuted, fontSize: '13px', margin: 0 }}>Call: {fmtDate(selectedSubmission.interviewDate)} · Submitted: {fmtDate(selectedSubmission.timestamp)}</p>
+                          </div>
                           <GradeBadge grade={selectedSubmission.grade} />
                         </div>
                         <div style={{ display: 'flex', borderBottom: `1px solid ${styles.colors.border}` }}>
@@ -1087,9 +1158,19 @@ export default function NextPlayCoachingApp() {
                         <div style={{ padding: '40px', textAlign: 'center', color: styles.colors.textMuted }}>No submissions yet</div>
                       ) : mySubmissions.map(sub => (
                         <div key={sub.id} onClick={() => { setSelectedSubmission(sub); setShowTranscript(false); }}
-                          style={{ padding: '16px 24px', borderBottom: `1px solid ${styles.colors.border}`, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div><p style={{ color: styles.colors.text, fontWeight: '600', margin: '0 0 4px' }}>{sub.athleteName}</p><p style={{ color: styles.colors.textMuted, fontSize: '13px', margin: 0 }}>{sub.interviewDate ? new Date(sub.interviewDate).toLocaleDateString() : new Date(sub.timestamp).toLocaleDateString()}</p></div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}><GradeBadge grade={sub.grade} /><span style={{ color: styles.colors.textMuted }}>→</span></div>
+                          style={{ padding: '16px 24px', borderBottom: `1px solid ${styles.colors.border}`, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
+                              <p style={{ color: styles.colors.text, fontWeight: '600', margin: 0 }}>{sub.athleteName}</p>
+                              <CallTypeBadge callType={sub.callType} />
+                            </div>
+                            <p style={{ color: styles.colors.textMuted, fontSize: '12px', margin: 0 }}>
+                              <span style={{ color: styles.colors.text }}>Call:</span> {fmtDate(sub.interviewDate)}
+                              <span style={{ margin: '0 6px', opacity: 0.5 }}>·</span>
+                              <span style={{ color: styles.colors.text }}>Submitted:</span> {fmtDate(sub.timestamp)}
+                            </p>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}><GradeBadge grade={sub.grade} /><span style={{ color: styles.colors.textMuted }}>→</span></div>
                         </div>
                       ))}
                     </div>
@@ -1257,7 +1338,10 @@ export default function NextPlayCoachingApp() {
                         <button onClick={() => setSelectedSubmission(null)} style={{ marginBottom: '16px', padding: '8px 16px', backgroundColor: 'transparent', border: `1px solid ${styles.colors.border}`, borderRadius: '6px', color: styles.colors.text, cursor: 'pointer' }}>← Back to List</button>
                         <div style={{ backgroundColor: styles.colors.bgCard, borderRadius: '12px', border: `1px solid ${styles.colors.border}`, overflow: 'hidden' }}>
                           <div style={{ padding: '20px 24px', borderBottom: `1px solid ${styles.colors.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div><h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: 0 }}>{selectedSubmission.athleteName}</h2><p style={{ color: styles.colors.textMuted, fontSize: '14px', margin: '4px 0 0' }}>{selectedSubmission.repName} · {selectedSubmission.interviewDate ? new Date(selectedSubmission.interviewDate).toLocaleDateString() : new Date(selectedSubmission.timestamp).toLocaleDateString()}</p></div>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}><h2 style={{ color: styles.colors.text, fontSize: '18px', fontWeight: '700', margin: 0 }}>{selectedSubmission.athleteName}</h2><CallTypeBadge callType={selectedSubmission.callType} /></div>
+                              <p style={{ color: styles.colors.textMuted, fontSize: '13px', margin: 0 }}>{selectedSubmission.repName} · Call: {fmtDate(selectedSubmission.interviewDate)} · Submitted: {fmtDate(selectedSubmission.timestamp)}</p>
+                            </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                               <GradeBadge grade={selectedSubmission.grade} />
                               <button onClick={() => { if (confirm('Delete this submission?')) deleteSubmission(selectedSubmission.id); }} style={{ padding: '6px 12px', backgroundColor: 'transparent', border: `1px solid ${styles.colors.danger}`, borderRadius: '6px', color: styles.colors.danger, fontSize: '13px', cursor: 'pointer' }}>Delete</button>
@@ -1302,12 +1386,13 @@ export default function NextPlayCoachingApp() {
                           </div>
                         )}
                         <div style={{ backgroundColor: styles.colors.bgCard, borderRadius: '12px', border: `1px solid ${styles.colors.border}`, overflow: 'hidden' }}>
-                          <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 1fr 80px 120px 120px 50px', gap: '12px', padding: '16px 24px', backgroundColor: styles.colors.bg, borderBottom: `1px solid ${styles.colors.border}`, alignItems: 'center' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '40px 1.4fr 1fr 110px 70px 110px 110px 40px', gap: '12px', padding: '16px 24px', backgroundColor: styles.colors.bg, borderBottom: `1px solid ${styles.colors.border}`, alignItems: 'center' }}>
                             <input type="checkbox" checked={filteredSubmissions.length > 0 && filteredSubmissions.every(s => selectedIds.includes(s.id))} onChange={toggleSelectAll} style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: styles.colors.accent }} />
-                            <span style={{ color: styles.colors.textMuted, fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Athlete</span>
+                            <span style={{ color: styles.colors.textMuted, fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Athlete / Parent</span>
                             <span style={{ color: styles.colors.textMuted, fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Rep</span>
+                            <span style={{ color: styles.colors.textMuted, fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Call Type</span>
                             <span style={{ color: styles.colors.textMuted, fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Grade</span>
-                            <span style={{ color: styles.colors.textMuted, fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Interview</span>
+                            <span style={{ color: styles.colors.textMuted, fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Call Date</span>
                             <span style={{ color: styles.colors.textMuted, fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Submitted</span>
                             <span></span>
                           </div>
@@ -1315,13 +1400,14 @@ export default function NextPlayCoachingApp() {
                             <div style={{ padding: '40px', textAlign: 'center', color: styles.colors.textMuted }}>No submissions found</div>
                           ) : filteredSubmissions.map(sub => (
                             <div key={sub.id} onClick={() => { setSelectedSubmission(sub); setShowTranscript(false); }}
-                              style={{ display: 'grid', gridTemplateColumns: '40px 1fr 1fr 80px 120px 120px 50px', gap: '12px', padding: '16px 24px', borderBottom: `1px solid ${styles.colors.border}`, backgroundColor: selectedIds.includes(sub.id) ? 'rgba(34, 197, 94, 0.1)' : sub.flagged ? 'rgba(239, 68, 68, 0.05)' : 'transparent', alignItems: 'center', cursor: 'pointer' }}>
+                              style={{ display: 'grid', gridTemplateColumns: '40px 1.4fr 1fr 110px 70px 110px 110px 40px', gap: '12px', padding: '16px 24px', borderBottom: `1px solid ${styles.colors.border}`, backgroundColor: selectedIds.includes(sub.id) ? 'rgba(34, 197, 94, 0.1)' : sub.flagged ? 'rgba(239, 68, 68, 0.05)' : 'transparent', alignItems: 'center', cursor: 'pointer' }}>
                               <input type="checkbox" checked={selectedIds.includes(sub.id)} onChange={(e) => { e.stopPropagation(); toggleSelectSubmission(sub.id); }} onClick={(e) => e.stopPropagation()} style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: styles.colors.accent }} />
                               <span style={{ color: styles.colors.text, fontSize: '14px', fontWeight: '600' }}>{sub.flagged && <span style={{ marginRight: '8px' }}>🚩</span>}{sub.athleteName}</span>
                               <span style={{ color: styles.colors.textMuted, fontSize: '14px' }}>{sub.repName}</span>
+                              <CallTypeBadge callType={sub.callType} />
                               <GradeBadge grade={sub.grade} />
-                              <span style={{ color: styles.colors.text, fontSize: '13px' }}>{new Date(sub.interviewDate || sub.timestamp).toLocaleDateString()}</span>
-                              <span style={{ color: styles.colors.textMuted, fontSize: '13px' }}>{new Date(sub.timestamp).toLocaleDateString()}</span>
+                              <span style={{ color: styles.colors.text, fontSize: '13px' }}>{fmtDate(sub.interviewDate)}</span>
+                              <span style={{ color: styles.colors.textMuted, fontSize: '13px' }}>{fmtDate(sub.timestamp)}</span>
                               <span style={{ color: styles.colors.textMuted, fontSize: '14px' }}>→</span>
                             </div>
                           ))}
