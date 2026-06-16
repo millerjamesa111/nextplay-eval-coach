@@ -1,110 +1,165 @@
-# Next Play - Athlete Interview Command Center
+# Next Play Eval Coach
 
-Coaching and analysis tool for athlete interviews. Analyzes transcripts and provides coaching feedback.
+A web app that grades **L1 Eval Specialist sales-call transcripts** using Claude and outputs structured coaching feedback. It grades the **sales/setting motion** (discovery → pitch → $197 eval close), **not** the athlete interview.
 
-## Features
+Built as an independent clone of the Athlete Interview Command Center — same architecture, different rubric. This repo is **only** the Eval Coach.
 
-- **Rep View**: Paste transcripts → get coaching feedback with form fields
-- **Admin Dashboard**: View all submissions, filter by rep/date/grade
-- **Collapsible Transcript**: Toggle to show/hide original transcript side-by-side
-- **Trends Report**: Analyze patterns across calls, filter by rep and date range
-- **Download Selected**: Export submissions for pattern analysis
-- **Edit Instructions**: Customize the coaching system prompt
-- **Objection Handling**: Build a library of objection responses
+**Live:** https://nextplay-eval-coach.vercel.app
 
-## Quick Setup (15 minutes)
+---
 
-### Step 1: Supabase (Free)
+## What it does
 
-1. Go to [supabase.com](https://supabase.com) → Create account → New project
-2. Wait for project to spin up (~2 min)
-3. Go to **SQL Editor** (left sidebar)
-4. Paste the contents of `supabase-schema.sql` → Click **Run**
-5. Go to **Settings** → **API** (left sidebar)
-6. Copy these values:
-   - **Project URL** → you'll need this
-   - **anon public** key → you'll need this
+A transcript from a sales call gets pasted in, and the tool returns a copy/paste-ready coaching report: a handoff block for the athlete interview team, an auto-filled post-call form, a verdict, the biggest miss, replay moments with sharper versions, a script-execution check, a six-dimension scorecard, and one thing to lock in.
 
-### Step 2: GitHub
+Grading is **execution-based, not outcome-based** — a clean call that didn't close is not marked down, and a sloppy call that happened to close is not an A.
 
-1. Create a new repository on GitHub
-2. Upload all these files to it (or use git push)
+### Two call types
 
-### Step 3: Vercel (Free)
+The tool grades each call against its **own** standard:
 
-1. Go to [vercel.com](https://vercel.com) → Sign in with GitHub
-2. Click **Add New** → **Project**
-3. Import your GitHub repo
-4. Before deploying, add **Environment Variables**:
+- **Game Plan** — colder workshop lead, discovery-heavy. The job is to dig into pain, surface the outreach/posting gaps, get the parent to name and own their biggest challenge, then prescribe the starter kit + $197 eval close (+ $199 highlight upsell, post-close only).
+- **Auto Book (15-min)** — warm lead who watched a pre-call video. Short by design. Qualify fast → cost question → commitment check → eval pitch → close. **Not** graded down for limited discovery depth.
 
-| Name | Value |
-|------|-------|
-| `ANTHROPIC_API_KEY` | Your key from console.anthropic.com |
-| `NEXT_PUBLIC_SUPABASE_URL` | Project URL from Supabase |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | anon key from Supabase |
-| `NEXT_PUBLIC_ADMIN_PASSWORD` | Whatever you want (default: nextplay) |
+A third motion (setter/booking calls) exists but is **not yet graded** — don't run those as Game Plan.
 
-5. Click **Deploy**
+---
 
-Your app will be live at `your-project.vercel.app` in about 60 seconds.
+## Architecture
 
-## Local Development
+| Piece | What it is |
+|---|---|
+| **Hosting** | Vercel — auto-deploys from `main` ~30–60s after each commit |
+| **Database** | Supabase — stores submissions, the live system prompt, the coaching reference doc, and reps |
+| **Model** | `claude-sonnet-4-5`, `max_tokens: 4500` |
 
-```bash
-npm install
-cp .env.example .env.local
-# Fill in your values in .env.local
-npm run dev
+### Key files
+
+- `app/page.tsx` — main UI; holds the grade-computation function, title/interview-date extraction, the transcript panel, and the Coaching Reference Library tab.
+- `app/api/analyze/route.ts` — Claude streaming endpoint. Reads `system_prompt` + `coaching_reference` from Supabase, appends them, prepends the call type to the transcript.
+- `lib/supabase.ts` / `lib/supabase-server.ts` — clients.
+- `lib/system-prompt.ts` — default prompt (fallback only; the **live** prompt is in Supabase settings).
+
+---
+
+## The most important mental model: prompt vs. code
+
+- **Prompt changes** (rubric rules, grading philosophy, output wording) → Admin Dashboard → **Edit Instructions** → paste → Save. **Live immediately, no deploy.** Stored in Supabase `settings` under key `system_prompt`.
+- **Code changes** (dropdowns, fields, the grade math, title/date logic, token limit, model) → edit the file → commit to `main` → Vercel redeploys.
+
+> Rule of thumb: anything about *what the model writes* is a prompt change. Anything about *how the app behaves around the model* is a code change.
+
+The overall grade is **computed in code**, not by the model — `page.tsx` reads the six dimension letters from the scorecard, converts to points, averages, and sets the badge. The report text prints no overall letter grade, so it can never contradict the computed badge.
+
+---
+
+## Admin dashboard
+
+Access via the **Admin Dashboard** tab (password is set in the `NEXT_PUBLIC_ADMIN_PASSWORD` env var).
+
+Tabs: **Submit Transcript**, **View Submissions**, **Manage Reps**, **Edit Instructions**, **Coaching Reference Library**.
+
+- **Manage Reps** — rep codes validated against the `reps` table (format `keegan-001`). If you get "code may already exist" with an empty list, the `reps` table is missing or mis-columned.
+- **Coaching Reference Library** — appended to the system prompt at analysis time (Supabase key `coaching_reference`; `page.tsx` and `route.ts` must stay in sync). Two sections: OBJECTION HANDLES and MUST-PULL DISCOVERY THREADS.
+
+---
+
+## Environment variables (set in Vercel)
+
+| Variable | Purpose |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | **Legacy** anon key (`eyJ...` JWT format — the app's Supabase library version requires the legacy key, **not** the new `sb_publishable_...` format) |
+| `ANTHROPIC_API_KEY` | Claude API key |
+| `NEXT_PUBLIC_ADMIN_PASSWORD` | Admin dashboard password |
+
+---
+
+## Database schema
+
+Run in the Supabase SQL Editor on a fresh project.
+
+```sql
+-- Submissions
+CREATE TABLE submissions (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  rep_name TEXT NOT NULL,
+  athlete_name TEXT NOT NULL,
+  grade TEXT,
+  output TEXT NOT NULL,
+  transcript TEXT NOT NULL,
+  interview_date TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  flagged BOOLEAN DEFAULT FALSE,
+  rep_id UUID,
+  transcript_header TEXT
+);
+
+-- Settings (system prompt, coaching reference doc, etc.)
+CREATE TABLE settings (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  key TEXT UNIQUE NOT NULL,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Reps (required for Manage Reps — needs rep_name, rep_code, AND active)
+CREATE TABLE reps (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  rep_name TEXT NOT NULL,
+  rep_code TEXT UNIQUE NOT NULL,
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX idx_submissions_created_at ON submissions(created_at DESC);
+CREATE INDEX idx_submissions_rep_name ON submissions(rep_name);
+CREATE INDEX idx_submissions_flagged ON submissions(flagged);
+CREATE INDEX idx_settings_key ON settings(key);
+
+-- Row Level Security
+ALTER TABLE submissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reps ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow all on submissions" ON submissions FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all on settings" ON settings FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all on reps" ON reps FOR ALL USING (true) WITH CHECK (true);
 ```
 
-Open [http://localhost:3000](http://localhost:3000)
+**Schema gotchas:**
+- `submissions` needs `rep_id` and `transcript_header` or grading a call errors.
+- The `reps` table must include `rep_name`, `rep_code`, **and** `active`.
 
-## File Structure
+---
 
-```
-nextplay-app/
-├── app/
-│   ├── api/
-│   │   ├── analyze/route.ts    # Transcript analysis endpoint
-│   │   └── trends/route.ts     # Trends analysis endpoint
-│   ├── globals.css
-│   ├── layout.tsx
-│   └── page.tsx                # Main app (copy from artifact)
-├── lib/
-│   ├── supabase.ts             # Database client
-│   └── system-prompt.ts        # Default coaching prompt
-├── .env.example
-├── .gitignore
-├── next.config.js
-├── package.json
-├── README.md
-└── supabase-schema.sql
-```
+## Build sequence (fresh clone)
 
-## Important: page.tsx
+1. **Supabase** — new project → SQL Editor → run the schema above → grab the Project URL and legacy anon key.
+2. **GitHub** — New repository → *Import a repository* → source URL → name it → leave credentials blank → Begin import.
+3. **Vercel** — Add New → Project → import the repo → add the four env vars → Deploy.
+4. **Prompt** — Admin Dashboard → Edit Instructions → paste the L1 rubric → Save.
+5. **Reps** — Admin → Manage Reps → add a rep (`keegan-001`).
+6. **Coaching Reference Library** — paste the seeded must-pull threads → Save.
+7. **Test** — run a real transcript; confirm correct call type, useful handoff, the grade tracks the scorecard. Then run an Auto Book and a non-close before trusting it broadly.
 
-The `app/page.tsx` file needs to be created from the working Claude artifact. 
+---
 
-**To create it:**
-1. Copy the full content from `nextplay-coaching-app.jsx` (the artifact)
-2. Make these changes for Next.js:
-   - Change `window.storage` calls to use the Supabase client
-   - Change direct Anthropic API calls to use `/api/analyze` and `/api/trends`
-   - Add TypeScript types
+## Workflow notes & gotchas
 
-The artifact contains all the UI logic for:
-- Rep submission form
-- Admin dashboard with 4 tabs
-- Collapsible transcript view
-- Trends report generation
-- Rep name normalization
+- **Pushing code:** GitHub web editor (open file → Raw to copy current contents → edit → paste → Commit to `main`). Vercel redeploys in ~1 min. When handing off updated code, replace the **whole file** rather than doing surgical find-and-replace — repeated patterns make "find this text" ambiguous.
+- **Transcripts** come from the WAVV dialer. The first line is the parent's name + appointment status, so title extraction pulls from the grader's output (Parent First/Last Name) with a header fallback.
+- **WAVV format is inconsistent** — some exports have inline `(MM:SS)` timestamps, others are a no-timestamp Summary/Highlights/Action-Items block. The standard paste is the no-timestamp summary; the rubric grades either, but watch that it grades the **call**, not the summary.
+- **Duplicate prevention** keys off the transcript header — to re-run the same transcript, delete the old submission first.
+- **Keep scripts in sync** — if the prompt's script beats change, the real scripts changed too.
+- **Stop-tuning principle** — the prompt has hit the ceiling of stacked "never" rules; the grade is locked in code, and remaining slips are caught in a ~30-second human review pass. Prefer populating the Library over adding more negative rules.
 
-## Admin Password
+---
 
-Default password is `nextplay`. Change it by setting `NEXT_PUBLIC_ADMIN_PASSWORD` in Vercel.
+## Open items
 
-## Costs
-
-- **Vercel Hobby**: Free
-- **Supabase Free Tier**: Free (500MB database)
-- **Anthropic API**: ~$0.01-0.02 per transcript analysis
+- **Auto Book branch is untested** — every run so far has been Game Plan. #1 real gap.
+- **Non-close grading untested** — needs a declined-politely transcript run through to confirm execution-not-outcome grading holds.
+- **OBJECTION HANDLES** in the Coaching Reference Library still need real examples from calls (not AI-guessed).
+- **MP3 click-to-play** feature scoped but blocked on whether WAVV reliably exports a timestamped transcript + the call MP3.
